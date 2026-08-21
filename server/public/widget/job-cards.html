@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Joby Jobs</title>
+  <style>
+    :root {
+      --joby-red: #e5202a;
+      --joby-red-dark: #b81620;
+      --joby-accent: #e5202a;
+      --accent-tint: #fdeaeb;
+      --ink: #16203a;
+      --muted: #6b7280;
+      --muted-2: #9aa1b2;
+      --card-bg: #ffffff;
+      --border: #ececf2;
+      --page-bg: #f4f6fb;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: transparent;
+      color: var(--ink);
+      padding: 8px;
+      -webkit-font-smoothing: antialiased;
+    }
+    .header {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-bottom: 16px; padding: 0 2px;
+    }
+    .result-count {
+      font-size: 12.5px; font-weight: 600; color: var(--joby-red);
+      background: #fdeaeb; padding: 5px 11px; border-radius: 999px; white-space: nowrap;
+    }
+    .carousel {
+      display: flex; overflow-x: auto; gap: 14px; padding: 4px 2px 16px 2px;
+      scroll-snap-type: x mandatory; scrollbar-width: thin; scrollbar-color: #f0c3c6 transparent;
+    }
+    .carousel::-webkit-scrollbar { height: 6px; }
+    .carousel::-webkit-scrollbar-thumb { background: #f0c3c6; border-radius: 10px; }
+    .job-card {
+      min-width: 272px; max-width: 272px; background: var(--card-bg);
+      border: 1px solid var(--border); border-radius: 14px; padding: 18px 18px 16px;
+      scroll-snap-align: start; display: flex; flex-direction: column; gap: 12px;
+      position: relative; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,58,0.05);
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease; cursor: pointer;
+    }
+    .job-card:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(16,24,58,0.13); border-color: #f0c3c6; }
+    .card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .employer { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .employer-logo {
+      width: 30px; height: 30px; border-radius: 8px; background: var(--joby-red); color: #fff;
+      display: grid; place-items: center; font-weight: 800; font-size: 14px; flex-shrink: 0;
+    }
+    .employer-name {
+      font-size: 13px; font-weight: 600; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .type-chip {
+      font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+      color: var(--joby-accent); background: var(--accent-tint); padding: 4px 9px; border-radius: 999px;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .job-title {
+      font-size: 16px; font-weight: 700; line-height: 1.32; color: var(--ink);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .meta-row { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .meta-row .ico { font-size: 13px; flex-shrink: 0; }
+    .meta-row span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .job-summary {
+      font-size: 12.5px; line-height: 1.5; color: var(--muted-2);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .divider { height: 1px; background: var(--border); margin: 2px 0; }
+    .apply-btn {
+      display: flex; align-items: center; justify-content: center; gap: 6px; text-align: center;
+      background: var(--joby-red); color: #fff; text-decoration: none; font-weight: 700; font-size: 13.5px;
+      padding: 11px 16px; border-radius: 9px; transition: background 0.18s ease; margin-top: auto;
+    }
+    .apply-btn:hover { background: var(--joby-red-dark); }
+    .loading-state, .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 15px; }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid #f7dcde; border-top-color: var(--joby-red);
+      border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto 16px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="loading-state">
+      <div class="spinner"></div>
+      Loading Joby opportunities...
+    </div>
+  </div>
+
+  <script type="module">
+    const root = document.getElementById('root');
+    let dataReceived = false;
+
+    setTimeout(() => { if (!dataReceived) root.innerHTML = ''; }, 3000);
+
+    function renderJobs(payload) {
+      dataReceived = true;
+      const data = payload && payload.type && payload.data ? payload.data : payload;
+      if (!data || !data.jobs) { root.innerHTML = ''; return; }
+      if (data.jobs.length === 0) {
+        root.innerHTML = '<div class="empty-state">No jobs found. Try a different search!</div>';
+        return;
+      }
+
+      root.innerHTML = '';
+
+      const header = document.createElement('div');
+      header.className = 'header';
+
+      const resultCount = document.createElement('div');
+      resultCount.className = 'result-count';
+      resultCount.textContent = (data.totalResults ?? data.jobs.length) + ' results';
+      header.appendChild(resultCount);
+      root.appendChild(header);
+
+      const carousel = document.createElement('div');
+      carousel.className = 'carousel';
+
+      data.jobs.forEach(job => {
+        const company = job.employer || 'Joby';
+        const initialStr = (company.trim()[0] || 'J').toUpperCase();
+        const safeUrl = String(job.applicationUrl || '#');
+
+        const card = document.createElement('div');
+        card.className = 'job-card';
+        card.addEventListener('click', (e) => {
+          if(!e.target.closest('.apply-btn')) {
+            if (window.openai && window.openai.openExternal) {
+              window.openai.openExternal({ href: safeUrl, redirectUrl: false });
+            } else {
+              window.open(safeUrl, '_blank', 'noopener,noreferrer');
+            }
+          }
+        });
+
+        const cardTop = document.createElement('div');
+        cardTop.className = 'card-top';
+
+        const employerDiv = document.createElement('div');
+        employerDiv.className = 'employer';
+
+        const logoDiv = document.createElement('div');
+        logoDiv.className = 'employer-logo';
+        logoDiv.textContent = initialStr;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'employer-name';
+        nameSpan.textContent = company;
+
+        employerDiv.appendChild(logoDiv);
+        employerDiv.appendChild(nameSpan);
+
+        cardTop.appendChild(employerDiv);
+        // Only show a job-type chip when the feed actually provides one.
+        const typeText = job.schedule || job.contractType;
+        if (typeText) {
+          const typeChip = document.createElement('span');
+          typeChip.className = 'type-chip';
+          typeChip.textContent = typeText;
+          cardTop.appendChild(typeChip);
+        }
+        card.appendChild(cardTop);
+
+        const titleDiv = document.createElement('div');
+        titleDiv.className = 'job-title';
+        titleDiv.textContent = job.title || 'Open Position';
+        card.appendChild(titleDiv);
+
+        // Only show a location row when the feed actually provides one.
+        if (job.location) {
+          const locRow = document.createElement('div');
+          locRow.className = 'meta-row';
+          const locIco = document.createElement('span');
+          locIco.className = 'ico';
+          locIco.textContent = '📍';
+          const locText = document.createElement('span');
+          locText.textContent = job.location;
+          locRow.appendChild(locIco);
+          locRow.appendChild(locText);
+          card.appendChild(locRow);
+        }
+
+        if (job.salary) {
+          const salRow = document.createElement('div');
+          salRow.className = 'meta-row';
+          const salIco = document.createElement('span');
+          salIco.className = 'ico';
+          salIco.textContent = '💰';
+          const salText = document.createElement('span');
+          salText.textContent = job.salary;
+          salRow.appendChild(salIco);
+          salRow.appendChild(salText);
+          card.appendChild(salRow);
+        }
+
+        if (job.summary) {
+          const sumDiv = document.createElement('div');
+          sumDiv.className = 'job-summary';
+          sumDiv.textContent = job.summary;
+          card.appendChild(sumDiv);
+        }
+
+        const divNode = document.createElement('div');
+        divNode.className = 'divider';
+        card.appendChild(divNode);
+
+        const applyBtn = document.createElement('a');
+        applyBtn.className = 'apply-btn';
+        applyBtn.textContent = 'View job →';
+        applyBtn.href = safeUrl;
+        applyBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (window.openai && window.openai.openExternal) {
+            window.openai.openExternal({ href: safeUrl, redirectUrl: false });
+          } else {
+            window.open(safeUrl, '_blank', 'noopener,noreferrer');
+          }
+        });
+        card.appendChild(applyBtn);
+
+        carousel.appendChild(card);
+      });
+
+      root.appendChild(carousel);
+    }
+
+    window.addEventListener('openai:set_globals', (event) => {
+      const globals = event.detail?.globals;
+      if (globals?.toolOutput) renderJobs(globals.toolOutput);
+    });
+    if (window.openai?.toolOutput) renderJobs(window.openai.toolOutput);
+    if (window.openai?.onToolOutput) window.openai.onToolOutput((data) => renderJobs(data));
+  </script>
+</body>
+</html>

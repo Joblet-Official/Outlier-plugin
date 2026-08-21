@@ -1,0 +1,923 @@
+// ============================================================================
+// Joby Job Search (XML Feed, SQLite)
+//
+// This server syncs job data from an XML feed into a local SQLite database,
+// allowing fast full-text searching (FTS5) with low memory usage.
+// ============================================================================
+
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { DatabaseSync } from "node:sqlite";
+import { XMLParser } from "fast-xml-parser";
+import express from "express";
+import cors from "cors";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// TODO: paste the Joby XML feed URL below (or set JOBY_FEED_URL in the environment).
+const FEED_URL =
+  process.env.JOBY_FEED_URL ||
+  "https://joveo-outbound-feeds-prod.s3-accelerate.amazonaws.com/joveo-8bc66f8d/e52b8c05.xml";
+
+// Apply/redirect link host to lock the feed to (e.g. "xxxx.jometer.com").
+// Once you have the feed, set JOBY_APPLY_HOST so only that host is accepted.
+// While empty, any https:// apply URL is accepted (fine for local testing).
+const APPLY_URL_HOST = (process.env.JOBY_APPLY_HOST || "tnl2.jometer.com").trim();
+
+// Public domain the widget is served from (used for the ChatGPT App CSP).
+const WIDGET_DOMAIN = process.env.JOBY_WIDGET_DOMAIN || "https://mcp.joby.joveo.com";
+
+// How often to re-download the feed and refresh the table (default 1 hour).
+const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60 * 60 * 1000);
+
+// Feed download timeout. Large feeds (100 MB+) need a generous window.
+const FEED_FETCH_TIMEOUT_MS = Number(process.env.FEED_FETCH_TIMEOUT_MS || 180000);
+
+// Where the SQLite file lives. Use ":memory:" to keep it in RAM instead.
+const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "data", "jobs.db");
+
+const WIDGET_URI = "ui://joby/job-cards-v1.html";
+
+const REDIRECT_DOMAINS = APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [];
+
+// ----------------------------------------------------
+// Database setup
+// ----------------------------------------------------
+if (DB_PATH !== ":memory:") {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+}
+const db = new DatabaseSync(DB_PATH);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id            TEXT PRIMARY KEY,
+    title         TEXT,
+    company       TEXT,
+    workplace     TEXT,
+    city          TEXT,
+    state         TEXT,
+    country       TEXT,
+    postcode      TEXT,
+    type          TEXT,
+    contractType  TEXT,
+    salary        TEXT,
+    hours         TEXT,
+    summary       TEXT,
+    url           TEXT,
+    category      TEXT,
+    location      TEXT,
+    search_blob   TEXT,
+    loc_blob      TEXT
+  );
+`);
+
+// Full-text search index over title, company, category, summary, and location
+// (external content = the jobs table, so no data is duplicated). Rebuilt after
+// every sync. Weighted ranking ensures title matches surface first.
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts
+  USING fts5(title, company, category, summary, location, content='jobs', content_rowid='rowid');
+`);
+
+// ----------------------------------------------------
+// Feed parsing helpers (same mapping rules as Option 1)
+// ----------------------------------------------------
+const xmlParser = new XMLParser({
+  ignoreAttributes: true,
+  parseTagValue: false,
+  trimValues: true,
+});
+
+function normalizeType(raw: unknown): string {
+  const key = String(raw ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+  const map: Record<string, string> = {
+    FULLTIME: "Full-time",
+    PARTTIME: "Part-time",
+    PERM: "Permanent",
+    PERMANENT: "Permanent",
+    CONTRACT: "Contract",
+    CONTRACTTOHIRE: "Contract to Hire",
+    TEMPORARY: "Temporary",
+    TEMP: "Temporary",
+    INTERN: "Internship",
+    INTERNSHIP: "Internship",
+  };
+  // Only report a job type the feed actually provides — never invent one.
+  return map[key] || (raw ? String(raw) : "");
+}
+
+function stripHtml(html: unknown): string {
+  return String(html ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\*\*/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#\d+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function summarize(html: unknown, max = 220): string {
+  const text = stripHtml(html);
+  if (text.length <= max) return text;
+  return text.slice(0, max).replace(/\s+\S*$/, "") + "…";
+}
+
+function str(v: unknown): string {
+  return v == null ? "" : String(v).trim();
+}
+
+interface Row {
+  id: string; title: string; company: string; workplace: string;
+  city: string; state: string; country: string; postcode: string;
+  type: string; contractType: string; salary: string; hours: string;
+  summary: string; url: string; category: string;
+  location: string; search_blob: string; loc_blob: string;
+}
+
+function formatSalary(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  // Feed format: "GBP 30368-30368 ANNUALLY" or "GBP 13.95-13.95 HOURLY"
+  const m = s.match(/^([A-Z]{3})\s+([\d.]+)-([\d.]+)\s+(\w+)$/i);
+  if (!m) return s;
+  const [, currency, low, high, period] = m;
+  const lo = parseFloat(low);
+  const hi = parseFloat(high);
+  const periodLabel = period.charAt(0).toUpperCase() + period.slice(1).toLowerCase();
+  if (lo === hi) return `${currency} ${lo.toLocaleString("en-GB")} ${periodLabel}`;
+  return `${currency} ${lo.toLocaleString("en-GB")} - ${hi.toLocaleString("en-GB")} ${periodLabel}`;
+}
+
+
+function normalizeCountry(raw: unknown): string {
+  const value = str(raw);
+  if (/^(us|usa|united states|united states of america)$/i.test(value)) {
+    return "United States";
+  }
+  return value;
+}
+
+// ----------------------------------------------------
+// Content exclusion
+//
+// Drop listings that promote or enable real-money gambling (casino testing,
+// wagering, sportsbooks, etc.), which conflict with the platform's gambling
+// and general-audience rules. Applied at sync time so excluded jobs never
+// enter the database. Override the term list with JOBY_EXCLUDE_TERMS
+// (comma-separated); set it to an empty value to disable exclusion entirely.
+// ----------------------------------------------------
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const DEFAULT_EXCLUDE_TERMS = [
+  "casino",
+  "gambling",
+  "gambler",
+  "wager",
+  "wagering",
+  "betting",
+  "sportsbook",
+  "sports book",
+  "poker",
+  "roulette",
+  "blackjack",
+  "slots machine",
+  "igaming",
+  "i-gaming",
+];
+
+const EXCLUDE_TERMS =
+  process.env.JOBY_EXCLUDE_TERMS !== undefined
+    ? process.env.JOBY_EXCLUDE_TERMS.split(",").map((t) => t.trim()).filter(Boolean)
+    : DEFAULT_EXCLUDE_TERMS;
+
+const EXCLUDE_RE = EXCLUDE_TERMS.length
+  ? new RegExp(`\\b(${EXCLUDE_TERMS.map(escapeRegExp).join("|")})\\b`, "i")
+  : null;
+
+function isExcludedJob(j: any): boolean {
+  if (!EXCLUDE_RE) return false;
+  const haystack = `${str(j.title)} ${str(j.company)} ${str(j.category)} ${stripHtml(j.description)}`;
+  return EXCLUDE_RE.test(haystack);
+}
+
+// ----------------------------------------------------
+// Deduplication
+//
+// The feed expands each real job into many geo-targeted copies: one canonical
+// row (referencenumber WITHOUT a "-expVer-<n>" suffix) that carries the true
+// job location, plus copies "<ref>-expVer-<n>" whose city/state are surrounding
+// *targeting* areas — not where the job actually is. We collapse each group to
+// one listing so the same job isn't shown hundreds of times, display the real
+// (canonical) location, and keep every targeted area only in the hidden search
+// blob so the job is still findable by area without mislabeling its location.
+// ----------------------------------------------------
+function baseRef(ref: string): string {
+  return ref.replace(/-expVer-\d+$/i, "");
+}
+
+function isCanonicalRef(ref: string): boolean {
+  return !!ref && !/-expVer-\d+$/i.test(ref);
+}
+
+// Extract a real location embedded in a title like "... (Leesport, PA)".
+// Only accepts a "City, ST" where ST is a valid US state code — so parentheticals
+// such as "(2nd Shift)" or "(Up to 90% Travel)" are ignored.
+function titleLocation(title: string): { city: string; state: string } | null {
+  const m = title.match(/\(([A-Za-zÀ-ÿ .'’-]+),\s*([A-Za-z]{2})\)\s*$/);
+  if (!m) return null;
+  const code = m[2].toUpperCase();
+  if (!VALID_STATE_CODES.has(code)) return null;
+  return { city: m[1].trim(), state: code };
+}
+
+// Map one group of feed rows (all sharing a base referencenumber) to a single Row.
+function mapGroup(baseKey: string, group: any[]): Row {
+  const canonical = group.find((j) => isCanonicalRef(str(j.referencenumber)));
+  const rep = canonical ?? group[0];
+
+  const title = str(rep.title) || "Open Position";
+  const company = str(rep.company) || str(rep.advertiser);
+  const category = str(rep.category);
+  const workplace = str(rep.location); // XML 'location' = workplace name
+
+  // Real job location: prefer the canonical row's geo; otherwise a location
+  // embedded in the title; otherwise leave it unspecified rather than guessing
+  // from a targeting city.
+  let city = "", state = "", country = "", postcode = "";
+  const locSource = canonical ?? null;
+  if (locSource) {
+    city = str(locSource.city);
+    state = str(locSource.state);
+    country = normalizeCountry(locSource.country);
+    postcode = str(locSource.postalcode);
+  } else {
+    const t = titleLocation(title);
+    if (t) { city = t.city; state = t.state; country = "United States"; }
+  }
+  const url = str((canonical ?? rep).url);
+  const location = [city, state, country].filter(Boolean).join(", ");
+
+  // Search area = every targeted city/state/country across the whole group, plus
+  // the real location — so the job is findable by any area it targets, kept
+  // separate from the displayed (real) location.
+  const area = new Set<string>();
+  const add = (v: string) => { if (v) area.add(v.toLowerCase()); };
+  for (const j of group) {
+    add(str(j.city));
+    const st = str(j.state);
+    add(st);
+    add(stateSearchAliases(st));
+    add(normalizeCountry(j.country));
+    add(str(j.postalcode));
+  }
+  add(city); add(state); add(stateSearchAliases(state)); add(country);
+
+  return {
+    id: baseKey,
+    title,
+    company,
+    workplace,
+    city, state, country, postcode,
+    type: normalizeType(rep.type),
+    contractType: str(rep.contractType),
+    salary: formatSalary(rep.salary),
+    hours: str(rep.hours),
+    summary: summarize(rep.description),
+    url,
+    category,
+    location,
+    search_blob: `${title} ${company} ${category}`.toLowerCase(),
+    loc_blob: [...area].join(" ").replace(/[^a-z0-9]+/gi, " ").replace(/\s+/g, " ").trim(),
+  };
+}
+
+// ----------------------------------------------------
+// Sync: download feed → replace table contents
+// ----------------------------------------------------
+async function fetchFeedXml(): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FEED_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(FEED_URL, {
+      headers: { "Accept": "application/xml, text/xml, */*" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Feed fetch error: ${response.status}`);
+    const size = Number(response.headers.get("content-length"));
+    if (size > 150 * 1024 * 1024) throw new Error("Feed size exceeds 150MB limit");
+    return await response.text();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+let lastSync = 0;
+let syncing = false;
+
+async function syncFeed(): Promise<number> {
+  const getJobCount = () => {
+    const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
+    return row ? row.n : 0;
+  };
+  if (syncing) return getJobCount();
+  syncing = true;
+  try {
+    const xml = await fetchFeedXml();
+    const parsed = xmlParser.parse(xml);
+    const source = parsed?.source ?? parsed ?? {};
+    let rawJobs = source.job ?? [];
+    if (!Array.isArray(rawJobs)) rawJobs = rawJobs ? [rawJobs] : [];
+
+    // Exclude policy-restricted (gambling/casino) listings, then group the
+    // remaining rows by base referencenumber so each real job — expanded across
+    // many geo-targeted copies in the feed — becomes a single deduplicated Row.
+    const groups = new Map<string, any[]>();
+    for (const j of rawJobs) {
+      if (isExcludedJob(j)) continue;
+      const ref = str(j.referencenumber);
+      const key = ref ? baseRef(ref) : `${str(j.title)}|${str(j.url)}`.slice(0, 200);
+      if (!key) continue;
+      const g = groups.get(key);
+      if (g) g.push(j); else groups.set(key, [j]);
+    }
+    const rows = [...groups.entries()].map(([key, group]) => mapGroup(key, group));
+
+    const currentCount = getJobCount();
+
+    db.exec("BEGIN");
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS jobs_staging (
+          id TEXT PRIMARY KEY, title TEXT, company TEXT, workplace TEXT,
+          city TEXT, state TEXT, country TEXT, postcode TEXT, type TEXT,
+          contractType TEXT, salary TEXT, hours TEXT, summary TEXT, url TEXT,
+          category TEXT, location TEXT, search_blob TEXT, loc_blob TEXT
+        );
+      `);
+      db.exec("DELETE FROM jobs_staging");
+
+      const insertStagingStmt = db.prepare(`
+        INSERT INTO jobs_staging (id, title, company, workplace, city, state, country, postcode, type, contractType, salary, hours, summary, url, category, location, search_blob, loc_blob)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      let validJobs = 0;
+      const seen = new Set<string>();
+      for (const r of rows) {
+        if (seen.has(r.id)) continue;
+        if (!r.id || !r.title || !r.company || !r.url) continue;
+        if (!r.url.startsWith("https://")) continue;
+        if (APPLY_URL_HOST) {
+          try {
+            const parsedUrl = new URL(r.url);
+            if (parsedUrl.host !== APPLY_URL_HOST) continue;
+          } catch { continue; }
+        }
+
+        seen.add(r.id);
+        insertStagingStmt.run(
+          r.id, r.title, r.company, r.workplace, r.city, r.state, r.country, r.postcode,
+          r.type, r.contractType, r.salary, r.hours, r.summary, r.url, r.category, r.location, r.search_blob, r.loc_blob
+        );
+        validJobs++;
+      }
+
+      if (rows.length === 0) {
+        throw new Error("Validation failed: feed contains no jobs.");
+      }
+      // After dedup the real job count is ~100+; keep a modest floor that still
+      // catches an empty/broken feed. Override with MIN_VALID_JOBS if needed.
+      const MIN_VALID_JOBS = Number(process.env.MIN_VALID_JOBS || 25);
+      if (validJobs < MIN_VALID_JOBS) {
+        throw new Error(`Validation failed: only ${validJobs} valid jobs; minimum is ${MIN_VALID_JOBS}.`);
+      }
+      if (currentCount > 0 && validJobs < currentCount * 0.25) {
+        throw new Error(`Validation failed: Job count dropped by more than 75% (${currentCount} -> ${validJobs}).`);
+      }
+
+      db.exec("DELETE FROM jobs");
+      db.exec("INSERT INTO jobs SELECT * FROM jobs_staging");
+      db.exec("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')");
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+
+    lastSync = Date.now();
+    return getJobCount();
+  } finally {
+    syncing = false;
+  }
+}
+
+// ----------------------------------------------------
+// Search (SQL) — mirrors Option 1's query/location handling + title ranking
+// ----------------------------------------------------
+function parseSearch(rawQuery: unknown, explicitLocation?: unknown): { q: string; location: string } {
+  let q = String(rawQuery || "").trim();
+  let location = explicitLocation ? String(explicitLocation).trim() : "";
+
+  if (!location) {
+    // Capture a trailing "... in <place>" where <place> may include commas,
+    // hyphens, apostrophes and postcodes, e.g. "in Seattle, Washington",
+    // "in Winston-Salem, NC", "in O'Fallon, MO 63368".
+    const m = q.match(/\s+in\s+(?:the\s+)?([A-Za-zÀ-ÿ0-9.,'’\s-]+?)\s*$/i);
+    if (m && m.index !== undefined) {
+      location = m[1].trim();
+      q = q.slice(0, m.index).trim();
+    }
+  }
+
+  location = normalizeLocationInput(location);
+
+  const cleaned = q.replace(/\b(jobs|openings|vacancies|opportunities|listings|positions|roles)\b/gi, " ").replace(/\s+/g, " ").trim();
+  q = cleaned;
+
+  return { q, location };
+}
+
+// Turn a user query into a safe FTS5 MATCH expression. We keep only word tokens
+// and prefix-match each (so "nurse" also finds "nurses"/"nursing"), AND-ing them
+// for precision. Stripping to [a-z0-9] tokens also prevents FTS syntax errors.
+
+const US_STATE_CODES: Record<string, string> = {
+  "alabama": "AL",
+  "alaska": "AK",
+  "arizona": "AZ",
+  "arkansas": "AR",
+  "california": "CA",
+  "colorado": "CO",
+  "connecticut": "CT",
+  "delaware": "DE",
+  "district of columbia": "DC",
+  "florida": "FL",
+  "georgia": "GA",
+  "hawaii": "HI",
+  "idaho": "ID",
+  "illinois": "IL",
+  "indiana": "IN",
+  "iowa": "IA",
+  "kansas": "KS",
+  "kentucky": "KY",
+  "louisiana": "LA",
+  "maine": "ME",
+  "maryland": "MD",
+  "massachusetts": "MA",
+  "michigan": "MI",
+  "minnesota": "MN",
+  "mississippi": "MS",
+  "missouri": "MO",
+  "montana": "MT",
+  "nebraska": "NE",
+  "nevada": "NV",
+  "new hampshire": "NH",
+  "new jersey": "NJ",
+  "new mexico": "NM",
+  "new york": "NY",
+  "north carolina": "NC",
+  "north dakota": "ND",
+  "ohio": "OH",
+  "oklahoma": "OK",
+  "oregon": "OR",
+  "pennsylvania": "PA",
+  "rhode island": "RI",
+  "south carolina": "SC",
+  "south dakota": "SD",
+  "tennessee": "TN",
+  "texas": "TX",
+  "utah": "UT",
+  "vermont": "VT",
+  "virginia": "VA",
+  "washington": "WA",
+  "west virginia": "WV",
+  "wisconsin": "WI",
+  "wyoming": "WY",
+  "puerto rico": "PR",
+};
+
+const COUNTRY_ALIASES: Record<string, string> = {
+  "us": "United States",
+  "usa": "United States",
+  "united states": "United States",
+  "united states of america": "United States",
+};
+
+// Reverse lookup (code -> full name) so we can index both forms of a state.
+const STATE_CODE_TO_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(US_STATE_CODES).map(([name, code]) => [code.toLowerCase(), name])
+);
+
+// Set of valid 2-letter US state codes (used to validate "(City, ST)" titles).
+const VALID_STATE_CODES = new Set(Object.values(US_STATE_CODES));
+
+// Given whatever the feed puts in the state field (full name OR 2-letter code),
+// return the *other* form so the location index contains both. This makes state
+// filtering work regardless of which form the user/query uses, e.g. "Texas"
+// stored in the feed still matches a query normalized to "TX", and vice versa.
+function stateSearchAliases(state: string): string {
+  const key = state.toLowerCase().replace(/\./g, "").trim();
+  const aliases: string[] = [];
+  if (US_STATE_CODES[key]) aliases.push(US_STATE_CODES[key]);        // full name -> code
+  if (STATE_CODE_TO_NAME[key]) aliases.push(STATE_CODE_TO_NAME[key]); // code -> full name
+  return aliases.join(" ");
+}
+
+function locationKey(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLocationInput(raw: unknown): string {
+  const value = String(raw ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  if (!value) return "";
+
+  const parts = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const secondPartIsCountry =
+    parts.length === 2 &&
+    Boolean(COUNTRY_ALIASES[locationKey(parts[1])]);
+
+  return parts
+    .map((part, index) => {
+      const key = locationKey(part);
+
+      // Normalize country variations such as USA, U.S. and US.
+      const country = COUNTRY_ALIASES[key];
+      if (country) return country;
+
+      const stateCode = US_STATE_CODES[key];
+
+      // Treat the value as a state when it is:
+      // 1. The complete location;
+      // 2. After a city; or
+      // 3. Before a country, such as "Texas, USA".
+      const isStatePosition =
+        parts.length === 1 ||
+        index > 0 ||
+        (index === 0 && secondPartIsCountry);
+
+      if (stateCode && isStatePosition) {
+        return stateCode;
+      }
+
+      return part;
+    })
+    .join(", ");
+}
+
+// Prefix-match tokens for FTS5 (e.g. "nurse" -> "nurse*" so it also matches
+// "nurses"/"nursing"). Stripping to [a-z0-9] tokens also prevents FTS syntax
+// errors. Tokens are combined by the caller with AND (precise) or OR (broad).
+// Common stop words removed from the text match so they can't pollute results
+// (e.g. a stray "in" from "nurse in Texas" must never broaden the search).
+const STOP_WORDS = new Set([
+  "in", "at", "on", "of", "the", "a", "an", "for", "to", "near", "by",
+  "with", "and", "or", "my", "me", "area",
+]);
+
+function ftsTokens(q: string): string[] {
+  return (q.toLowerCase().match(/[a-z0-9]+/g) || [])
+    .filter((t) => t.length > 1 && !STOP_WORDS.has(t))
+    .map((t) => t + "*");
+}
+
+// Run one FTS5 MATCH expression, optionally filtered by location.
+// bm25 ranks relevance with weighted columns:
+//   title=10, company=5, category=3, summary=1, location=1
+function runFtsQuery(
+  matchExpr: string,
+  locTokens: string[],
+  locParams: string[],
+  limit: number
+): { total: number; jobs: Row[] } {
+  // Whole-token match: pad the blob so "wi" matches the standalone token "wi",
+  // not a substring inside "Baldwin". locParams are padded to "% <token> %".
+  const locClause = locTokens.length
+    ? " AND " + locTokens.map(() => "(' ' || j.loc_blob || ' ') LIKE ?").join(" AND ")
+    : "";
+
+  const totalRow = db.prepare(
+    `SELECT COUNT(*) AS n FROM jobs_fts f JOIN jobs j ON j.rowid = f.rowid
+     WHERE jobs_fts MATCH ?${locClause}`
+  ).get(matchExpr, ...locParams) as { n: number } | undefined;
+  const total = totalRow ? totalRow.n : 0;
+
+  const rows = db.prepare(
+    `SELECT j.* FROM jobs_fts f JOIN jobs j ON j.rowid = f.rowid
+     WHERE jobs_fts MATCH ?${locClause}
+     ORDER BY bm25(jobs_fts, 10.0, 5.0, 3.0, 1.0, 1.0)
+     LIMIT ?`
+  ).all(matchExpr, ...locParams, limit) as unknown as Row[];
+
+  return { total, jobs: rows };
+}
+
+function searchDb(q: string, location: string, limit: number): { total: number; jobs: Row[] } {
+  const locTokens = location.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 1);
+  const locParams = locTokens.map((t) => `% ${t} %`);
+  const tokens = ftsTokens(q);
+
+  if (tokens.length) {
+    // Text search via the FTS5 index; location (if any) filters matched rows.
+    // First try a precise AND of all tokens. If that yields nothing (e.g. one
+    // token is misspelled, rare, or extraneous), fall back to an OR so a single
+    // bad token can't zero out an otherwise-good query. bm25 still surfaces the
+    // best (most tokens matched) rows first. This keeps results stable across
+    // the minor query-wording variations ChatGPT sends for the same request.
+    let result = runFtsQuery(tokens.join(" AND "), locTokens, locParams, limit);
+    if (result.total === 0 && tokens.length > 1) {
+      result = runFtsQuery(tokens.join(" OR "), locTokens, locParams, limit);
+    }
+    return result;
+  }
+
+  // No searchable query text — require at least a location filter, never return everything.
+  if (!locTokens.length) {
+    return { total: 0, jobs: [] };
+  }
+  const whereSql = "WHERE " + locTokens.map(() => "(' ' || loc_blob || ' ') LIKE ?").join(" AND ");
+  const totalRow2 = db.prepare(`SELECT COUNT(*) AS n FROM jobs ${whereSql}`).get(...locParams) as { n: number } | undefined;
+  const total2 = totalRow2 ? totalRow2.n : 0;
+  const rows2 = db.prepare(`SELECT * FROM jobs ${whereSql} ORDER BY title ASC LIMIT ?`).all(...locParams, limit) as unknown as Row[];
+  return { total: total2, jobs: rows2 };
+}
+
+function toClientJob(r: Row) {
+  const job: Record<string, string> = {
+    title: r.title,
+    employer: r.company,
+    workplace: r.workplace,
+    location: r.location,
+    schedule: r.type,
+    contractType: r.contractType,
+    salary: r.salary,
+    summary: r.summary,
+    applicationUrl: r.url,
+  };
+  // Remove empty fields so the response stays clean
+  for (const key of Object.keys(job)) {
+    if (!job[key]) delete job[key];
+  }
+  return job;
+}
+
+// ----------------------------------------------------
+// Express app + MCP server (same scaffolding as Option 1)
+// ----------------------------------------------------
+const app = express();
+app.use(cors({
+  origin: "*",
+  exposedHeaders: ["mcp-session-id"],
+  allowedHeaders: ["Content-Type", "mcp-session-id", "Accept"],
+}));
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+app.get("/", (req, res) => res.json({ name: "Joby ChatGPT XML Feed App (SQLite)", status: "running", mcp: "/mcp" }));
+app.get("/health", (req, res) => {
+  if (lastSync === 0) {
+    res.status(503).json({ status: "syncing", service: "joby-chatgpt-xmlfeed" });
+    return;
+  }
+  const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
+  const n = row ? row.n : 0;
+  res.json({ status: "ok", service: "joby-chatgpt-xmlfeed", backend: "sqlite", version: "1.0.0", jobs: n, lastSync });
+});
+
+
+
+function buildMcpServer() {
+  const server = new Server(
+    { name: "Joby - AI Job Search (XML Feed, SQLite)", version: "1.0.0" },
+    { capabilities: { tools: {}, resources: {} } }
+  );
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [{ uri: WIDGET_URI, name: "Joby Job Cards", mimeType: "text/html;profile=mcp-app" }],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+    if (req.params.uri !== WIDGET_URI) throw new Error("Resource not found");
+    const widgetPath = path.join(__dirname, "..", "public", "widget", "job-cards.html");
+    let html: string;
+    try { html = fs.readFileSync(widgetPath, "utf-8"); }
+    catch { html = "<html><body><p>Widget not found</p></body></html>"; }
+    // Per the OpenAI Apps UI spec, component _meta (widget domain, CSP,
+    // redirect permissions) belongs ON the individual resource contents object,
+    // not at the top level of the read result.
+    return {
+      contents: [{
+        uri: req.params.uri,
+        mimeType: "text/html;profile=mcp-app",
+        text: html,
+        _meta: {
+          ui: {
+            domain: WIDGET_DOMAIN,
+            prefersBorder: true,
+            csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
+          },
+          "openai/widgetDomain": WIDGET_DOMAIN,
+          "openai/widgetPrefersBorder": true,
+          "openai/widgetCSP": {
+            connect_domains: [],
+            resource_domains: [],
+            redirect_domains: REDIRECT_DOMAINS
+          },
+          "openai/widgetDescription": "Displays matching Joby job listings in job cards.",
+        },
+      }],
+    } as any;
+  });
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [{
+      name: "search_joby_job_listings",
+      title: "Search Joby job listings",
+      description: "Searches current Joby job listings by role or keyword. To filter by place, include it in the query text (e.g. 'nurse in Dallas, Texas'); for 'near me' searches the tool uses the approximate location the client provides. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Joby.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'software engineer', 'nurse'). A place may be included naturally (e.g. 'warehouse jobs in Ohio' or 'nurse near me').", minLength: 1, maxLength: 120 },
+          limit: { type: "integer", minimum: 1, maximum: 8, default: 6 },
+        },
+        required: ["query"],
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          type: { type: "string" },
+          data: {
+            type: "object",
+            properties: {
+              appliedFilters: { type: "object" },
+              totalResults: { type: "number" },
+              jobs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    employer: { type: "string" },
+                    workplace: { type: "string" },
+                    location: { type: "string" },
+                    schedule: { type: "string" },
+                    contractType: { type: "string" },
+                    salary: { type: "string" },
+                    summary: { type: "string" },
+                    applicationUrl: { type: "string" },
+                  },
+                  required: ["title", "applicationUrl"],
+                },
+              },
+            },
+            required: ["jobs"],
+          },
+        },
+        required: ["type", "data"],
+      },
+      annotations: { title: "Search Joby job listings", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+      _meta: { ui: { resourceUri: WIDGET_URI } },
+    } as any],
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name !== "search_joby_job_listings") throw new Error("Tool not found");
+    const args = request.params.arguments as any;
+
+    try {
+      // --- Server-side input validation ---
+      const rawQuery = typeof args.query === "string" ? args.query.trim() : "";
+      if (!rawQuery || rawQuery.length > 120) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "Please provide a search query (1–120 characters)." }],
+        };
+      }
+      const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 6, 8));
+
+      // Privacy-preserving location handling: there is no raw location input.
+      // A destination may be written into the query ("... in Dallas, Texas"),
+      // and "near me" intent uses the coarse, client-supplied approximate
+      // location from the request _meta side channel — never a precise value.
+      const meta = (request.params._meta ?? {}) as Record<string, any>;
+      const coarse = meta["openai/userLocation"];
+      let coarseLocation = "";
+      if (typeof coarse === "string") {
+        coarseLocation = coarse;
+      } else if (coarse && typeof coarse === "object") {
+        coarseLocation = [coarse.city, coarse.region ?? coarse.state, coarse.country]
+          .filter(Boolean)
+          .map(String)
+          .join(", ");
+      }
+
+      const nearMeRe = /\b(near\s*me|near\s*by|nearby|around\s*me|close\s*to\s*me|in\s+my\s+area)\b/i;
+      const wantsNearMe = nearMeRe.test(rawQuery);
+      const cleanedQuery = rawQuery.replace(nearMeRe, " ").replace(/\s+/g, " ").trim();
+
+      let { q, location } = parseSearch(cleanedQuery);
+      if (!location && wantsNearMe && coarseLocation) {
+        location = normalizeLocationInput(coarseLocation);
+      }
+
+      const result = searchDb(q, location, limit);
+      const jobs = result.jobs.map(toClientJob);
+
+      let textContent: string;
+      if (result.total === 0 && location) {
+        textContent = `No matching jobs found in "${location}" for "${q}". Would you like to broaden the search by removing the location filter?`;
+      } else if (result.total === 0) {
+        textContent = `No matching jobs found for "${q}". Try different keywords or a broader search term.`;
+      } else {
+        textContent = `Found ${result.total} Joby opportunities.`;
+      }
+
+      return {
+        content: [{ type: "text", text: textContent }],
+        structuredContent: {
+          type: "application/json",
+          data: { appliedFilters: { query: q, location: location || undefined, limit }, totalResults: result.total, jobs },
+        },
+        annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+        _meta: { ui: { resourceUri: WIDGET_URI } },
+      } as any;
+    } catch (error) {
+      console.error("search_joby_job_listings error:", error);
+      return {
+        isError: true,
+        content: [{ type: "text", text: "Sorry, Joby job search is temporarily unavailable. Please try again in a moment." }],
+      };
+    }
+  });
+
+  return server;
+}
+
+// OpenAI domain verification challenge
+app.get("/.well-known/openai-apps-challenge", (_req, res) => {
+  const token = process.env.OPENAI_APPS_CHALLENGE_TOKEN;
+  if (!token) return res.status(500).send("Missing OPENAI_APPS_CHALLENGE_TOKEN");
+  res.type("text/plain").send(token);
+});
+
+app.all("/mcp", async (req, res) => {
+  try {
+    const server = buildMcpServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+    res.on("close", () => server.close().catch(console.error));
+  } catch (err) {
+    console.error("MCP error:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+const PORT = process.env.PORT || 3001;
+
+async function start() {
+  const count = await syncFeed();
+  console.log(`Initial feed sync completed: ${count} jobs`);
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Feed: ${FEED_URL}`);
+    console.log(`DB:   ${DB_PATH}`);
+  });
+
+  setInterval(() => {
+    syncFeed().catch((error) => {
+      console.error("Feed re-sync failed:", error.message);
+    });
+  }, SYNC_INTERVAL_MS);
+}
+
+start().catch((error) => {
+  console.error("Startup failed:", error.message);
+  process.exit(1);
+});
