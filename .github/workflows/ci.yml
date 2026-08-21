@@ -11,8 +11,8 @@ jobs:
     steps:
       - name: Trigger Render Deploy
         run: |
-          if [ -z "${{ secrets.RENDER_DEPLOYMENT_HOOK}}" ]; then
-            echo "Error: RENDER_DEPLOY_HOOK_URL secret is not set."
+          if [ -z "${{ secrets.RENDER_DEPLOYMENT_HOOK }}" ]; then
+            echo "Error: RENDER_DEPLOYMENT_HOOK secret is not set."
             exit 1
           fi
-          curl -X POST ${{ secrets.RENDER_DEPLOYMENT_HOOK}}
+          curl -X POST -s "${{ secrets.RENDER_DEPLOYMENT_HOOK }}"
