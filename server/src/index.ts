@@ -27,7 +27,7 @@ const __dirname = path.dirname(__filename);
 // TODO: paste the Joby XML feed URL below (or set JOBY_FEED_URL in the environment).
 const FEED_URL =
   process.env.JOBY_FEED_URL ||
-  "https://joveo-outbound-feeds-prod.s3-accelerate.amazonaws.com/joveo-8bc66f8d/e52b8c05.xml";
+  "https://joveo-e30ca98e.s3-accelerate.amazonaws.com/e52b8c05/d7fe1f9b-f00f-4bb2-9b32-ad9b366ec2c2.xml";
 
 // Apply/redirect link host to lock the feed to (e.g. "xxxx.jometer.com").
 // Once you have the feed, set JOBY_APPLY_HOST so only that host is accepted.
