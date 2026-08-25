@@ -351,7 +351,6 @@ async function syncFeed(): Promise<number> {
     // many geo-targeted copies in the feed — becomes a single deduplicated Row.
     const groups = new Map<string, any[]>();
     for (const j of rawJobs) {
-      if (isExcludedJob(j)) continue;
       const ref = str(j.referencenumber);
       const key = ref ? baseRef(ref) : `${str(j.title)}|${str(j.url)}`.slice(0, 200);
       if (!key) continue;
