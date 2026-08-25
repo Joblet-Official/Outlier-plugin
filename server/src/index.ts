@@ -921,5 +921,3 @@ start().catch((error) => {
   console.error("Startup failed:", error.message);
   process.exit(1);
 });
-/ /   T r i g g e r   R e n d e r   D e p l o y   t e s t  
- 
