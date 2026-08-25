@@ -319,7 +319,10 @@ async function fetchFeedXml(): Promise<string> {
     });
     if (!response.ok) throw new Error(`Feed fetch error: ${response.status}`);
     const size = Number(response.headers.get("content-length"));
-    if (size > 150 * 1024 * 1024) throw new Error("Feed size exceeds 150MB limit");
+    // Safety cap on the feed download. Overridable via MAX_FEED_MB (in megabytes)
+    // so a growing feed doesn't require a code change. Default raised to 1024 MB.
+    const maxFeedMb = Number(process.env.MAX_FEED_MB || 1024);
+    if (size > maxFeedMb * 1024 * 1024) throw new Error(`Feed size exceeds ${maxFeedMb}MB limit`);
     return await response.text();
   } finally {
     clearTimeout(timeoutId);
