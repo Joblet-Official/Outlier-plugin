@@ -974,7 +974,7 @@ function buildMcpServer() {
 
 // OpenAI domain verification challenge
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-  res.type("text/plain").send("0c24tmDJOKcmnXx1u9pJy7jklW2cxx9NuwKMGz5VsCA");
+  res.type("text/plain").send("Oc24tmDJOKcmnXx1u9pJy7jklW2cxx9NuwKMGz5VsCA");
 });
 
 app.all("/mcp", async (req, res) => {
