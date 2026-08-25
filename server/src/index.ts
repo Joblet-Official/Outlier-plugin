@@ -41,7 +41,7 @@ const WIDGET_DOMAIN = process.env.JOBY_WIDGET_DOMAIN || "https://mcp.joby.joveo.
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60 * 60 * 1000);
 
 // Feed download timeout. Large feeds (100 MB+) need a generous window.
-const FEED_FETCH_TIMEOUT_MS = Number(process.env.FEED_FETCH_TIMEOUT_MS || 180000);
+const FEED_FETCH_TIMEOUT_MS = Number(process.env.FEED_FETCH_TIMEOUT_MS || 600000);
 
 // Where the SQLite file lives. Use ":memory:" to keep it in RAM instead.
 const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "data", "jobs.db");
@@ -309,29 +309,17 @@ function mapGroup(baseKey: string, group: any[]): Row {
 // ----------------------------------------------------
 // Sync: download feed → replace table contents
 // ----------------------------------------------------
-async function fetchFeedXml(): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), FEED_FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(FEED_URL, {
-      headers: { "Accept": "application/xml, text/xml, */*" },
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`Feed fetch error: ${response.status}`);
-    const size = Number(response.headers.get("content-length"));
-    // Safety cap on the feed download. Overridable via MAX_FEED_MB (in megabytes)
-    // so a growing feed doesn't require a code change. Default raised to 1024 MB.
-    const maxFeedMb = Number(process.env.MAX_FEED_MB || 1024);
-    if (size > maxFeedMb * 1024 * 1024) throw new Error(`Feed size exceeds ${maxFeedMb}MB limit`);
-    return await response.text();
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 let lastSync = 0;
 let syncing = false;
 
+// Sync strategy (memory-safe for very large feeds):
+//   Phase 1 — stream the HTTP response and slice it into individual <job>…</job>
+//             chunks, parsing each with the existing xmlParser (identical field
+//             semantics) and inserting into an on-disk `jobs_raw` staging table.
+//             The whole feed and its parsed tree are never held in memory.
+//   Phase 2 — dedup/group by base referencenumber one group at a time (via SQL)
+//             and rebuild the live `jobs` table, reusing the existing mapGroup.
+// Peak RAM stays in the tens of MB regardless of how large the feed grows.
 async function syncFeed(): Promise<number> {
   const getJobCount = () => {
     const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
@@ -340,24 +328,126 @@ async function syncFeed(): Promise<number> {
   if (syncing) return getJobCount();
   syncing = true;
   try {
-    const xml = await fetchFeedXml();
-    const parsed = xmlParser.parse(xml);
-    const source = parsed?.source ?? parsed ?? {};
-    let rawJobs = source.job ?? [];
-    if (!Array.isArray(rawJobs)) rawJobs = rawJobs ? [rawJobs] : [];
+    // ---- Phase 1: stream the feed into an on-disk raw staging table ----
+    db.exec("DROP TABLE IF EXISTS jobs_raw");
+    db.exec(`
+      CREATE TABLE jobs_raw (
+        base_ref TEXT, referencenumber TEXT, title TEXT, company TEXT, advertiser TEXT,
+        category TEXT, location TEXT, city TEXT, state TEXT, country TEXT, postalcode TEXT,
+        url TEXT, type TEXT, contractType TEXT, salary TEXT, hours TEXT, description TEXT
+      );
+    `);
+    const insertRawStmt = db.prepare(`
+      INSERT INTO jobs_raw (base_ref, referencenumber, title, company, advertiser, category, location, city, state, country, postalcode, url, type, contractType, salary, hours, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
-    // Exclude policy-restricted (gambling/casino) listings, then group the
-    // remaining rows by base referencenumber so each real job — expanded across
-    // many geo-targeted copies in the feed — becomes a single deduplicated Row.
-    const groups = new Map<string, any[]>();
-    for (const j of rawJobs) {
+    let rawCount = 0;
+    let inRawTx = false;
+    const RAW_BATCH = 1000;
+
+    // Parse a single <job>…</job> chunk with the existing parser and stage it.
+    const handleJobXml = (jobXml: string) => {
+      let j: any;
+      try {
+        const parsedJob: any = xmlParser.parse(jobXml);
+        j = parsedJob?.job ?? parsedJob;
+      } catch {
+        return; // skip a malformed job rather than failing the whole sync
+      }
+      if (!j || typeof j !== "object") return;
       const ref = str(j.referencenumber);
       const key = ref ? baseRef(ref) : `${str(j.title)}|${str(j.url)}`.slice(0, 200);
-      if (!key) continue;
-      const g = groups.get(key);
-      if (g) g.push(j); else groups.set(key, [j]);
+      if (!key) return;
+      if (!inRawTx) { db.exec("BEGIN"); inRawTx = true; }
+      insertRawStmt.run(
+        key, str(j.referencenumber), str(j.title), str(j.company), str(j.advertiser),
+        str(j.category), str(j.location), str(j.city), str(j.state), str(j.country), str(j.postalcode),
+        str(j.url), str(j.type), str(j.contractType), str(j.salary), str(j.hours), str(j.description)
+      );
+      rawCount++;
+      if (rawCount % RAW_BATCH === 0) { db.exec("COMMIT"); inRawTx = false; }
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FEED_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(FEED_URL, {
+        headers: { "Accept": "application/xml, text/xml, */*" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`Feed fetch error: ${response.status}`);
+      const body = response.body;
+      if (!body) throw new Error("Feed response has no body");
+
+      // Optional size cap (overridable via MAX_FEED_MB); only enforced when the
+      // server reports Content-Length. Streaming keeps memory low regardless.
+      const size = Number(response.headers.get("content-length"));
+      const maxFeedMb = Number(process.env.MAX_FEED_MB || 2048);
+      if (size && size > maxFeedMb * 1024 * 1024) {
+        throw new Error(`Feed size exceeds ${maxFeedMb}MB limit`);
+      }
+
+      // Locate the next real <job> open tag (guard against children like <jobType>).
+      const findJobOpen = (s: string, from: number): number => {
+        let i = from;
+        while (true) {
+          const idx = s.indexOf("<job", i);
+          if (idx === -1) return -1;
+          const c = s.charAt(idx + 4);
+          if (c === ">" || c === " " || c === "\t" || c === "\n" || c === "\r" || c === "/") return idx;
+          i = idx + 4;
+        }
+      };
+
+      const CLOSE = "</job>";
+      let buffer = "";
+      const drain = () => {
+        while (true) {
+          const open = findJobOpen(buffer, 0);
+          if (open === -1) {
+            // No job tag yet; keep only a small tail in case "<job" is split across chunks.
+            if (buffer.length > 4096) buffer = buffer.slice(-16);
+            break;
+          }
+          const close = buffer.indexOf(CLOSE, open);
+          if (close === -1) {
+            // Job not fully received yet; drop everything before it and wait for more.
+            if (open > 0) buffer = buffer.slice(open);
+            break;
+          }
+          const jobXml = buffer.slice(open, close + CLOSE.length);
+          buffer = buffer.slice(close + CLOSE.length);
+          handleJobXml(jobXml);
+        }
+      };
+
+      const reader = body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) { buffer += decoder.decode(value, { stream: true }); drain(); }
+      }
+      buffer += decoder.decode();
+      drain();
+
+      if (inRawTx) { db.exec("COMMIT"); inRawTx = false; }
+    } catch (e) {
+      if (inRawTx) { try { db.exec("ROLLBACK"); } catch {} inRawTx = false; }
+      db.exec("DROP TABLE IF EXISTS jobs_raw");
+      throw e;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    const rows = [...groups.entries()].map(([key, group]) => mapGroup(key, group));
+
+    if (rawCount === 0) {
+      db.exec("DROP TABLE IF EXISTS jobs_raw");
+      throw new Error("Validation failed: feed contains no jobs.");
+    }
+
+    // ---- Phase 2: dedup/group per base_ref and rebuild the jobs table ----
+    db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_raw_base ON jobs_raw(base_ref)");
 
     const currentCount = getJobCount();
 
@@ -378,19 +468,23 @@ async function syncFeed(): Promise<number> {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
+      const baseStmt = db.prepare("SELECT DISTINCT base_ref FROM jobs_raw");
+      const groupStmt = db.prepare("SELECT * FROM jobs_raw WHERE base_ref = ?");
+
       let validJobs = 0;
       const seen = new Set<string>();
-      for (const r of rows) {
+      for (const b of baseStmt.all() as { base_ref: string }[]) {
+        const group = groupStmt.all(b.base_ref) as any[];
+        if (!group.length) continue;
+        const r = mapGroup(b.base_ref, group);
         if (seen.has(r.id)) continue;
         if (!r.id || !r.title || !r.company || !r.url) continue;
         if (!r.url.startsWith("https://")) continue;
         if (APPLY_URL_HOST) {
           try {
-            const parsedUrl = new URL(r.url);
-            if (parsedUrl.host !== APPLY_URL_HOST) continue;
+            if (new URL(r.url).host !== APPLY_URL_HOST) continue;
           } catch { continue; }
         }
-
         seen.add(r.id);
         insertStagingStmt.run(
           r.id, r.title, r.company, r.workplace, r.city, r.state, r.country, r.postcode,
@@ -399,9 +493,6 @@ async function syncFeed(): Promise<number> {
         validJobs++;
       }
 
-      if (rows.length === 0) {
-        throw new Error("Validation failed: feed contains no jobs.");
-      }
       // After dedup the real job count is ~100+; keep a modest floor that still
       // catches an empty/broken feed. Override with MIN_VALID_JOBS if needed.
       const MIN_VALID_JOBS = Number(process.env.MIN_VALID_JOBS || 25);
@@ -419,6 +510,8 @@ async function syncFeed(): Promise<number> {
     } catch (e) {
       db.exec("ROLLBACK");
       throw e;
+    } finally {
+      db.exec("DROP TABLE IF EXISTS jobs_raw");
     }
 
     lastSync = Date.now();
