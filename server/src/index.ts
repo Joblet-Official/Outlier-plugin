@@ -116,8 +116,16 @@ function normalizeType(raw: unknown): string {
   return map[key] || (raw ? String(raw) : "");
 }
 
+// The feed occasionally carries a stray non-UTF-8 byte (a Windows-1252 en-dash)
+// that decodes to the Unicode replacement char U+FFFD. Restore it as a spaced
+// en-dash so titles like "React Developer – Remote" render cleanly instead of
+// "React Developer � Remote".
+function fixEncoding(s: string): string {
+  return s.replace(/\s*�\s*/g, " – ");
+}
+
 function stripHtml(html: unknown): string {
-  return String(html ?? "")
+  return fixEncoding(String(html ?? ""))
     .replace(/<[^>]+>/g, " ")
     .replace(/\*\*/g, "")
     .replace(/&nbsp;/gi, " ")
@@ -136,7 +144,7 @@ function summarize(html: unknown, max = 220): string {
 }
 
 function str(v: unknown): string {
-  return v == null ? "" : String(v).trim();
+  return v == null ? "" : fixEncoding(String(v)).trim();
 }
 
 interface Row {
@@ -230,6 +238,25 @@ function baseRef(ref: string): string {
   return ref.replace(/-expVer-\d+$/i, "");
 }
 
+// Normalize a title for use inside the grouping key.
+function normTitle(t: string): string {
+  return t.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Canonical job-identity key used to group/dedup raw feed rows.
+//
+// This feed reuses a SINGLE base referencenumber across many DISTINCT roles
+// (e.g. base 4549070005 holds ~39 different developer jobs), each expanded to
+// ~100+ targeting locations via a "-expVer-<n>" suffix. Grouping by base ref
+// alone therefore collapses genuinely different jobs into one. Combining the
+// base ref with the normalized title keeps real roles separate while still
+// folding each job's location-expansions together into one listing.
+function groupKey(ref: string, title: string, url: string): string {
+  const nt = normTitle(title);
+  if (ref) return `${baseRef(ref)}|${nt}`;
+  return `${nt}|${str(url)}`.slice(0, 200);
+}
+
 function isCanonicalRef(ref: string): boolean {
   return !!ref && !/-expVer-\d+$/i.test(ref);
 }
@@ -270,7 +297,15 @@ function mapGroup(baseKey: string, group: any[]): Row {
     if (t) { city = t.city; state = t.state; country = "United States"; }
   }
   const url = str((canonical ?? rep).url);
-  const location = [city, state, country].filter(Boolean).join(", ");
+  // Most roles in this feed are remote and carry only targeting cities (kept in
+  // the search blob), never a real location — so show "Remote" from the title
+  // rather than leaving the card location blank or mislabeling a targeting city.
+  const seenLoc = new Set<string>();
+  let location = [city, state, country]
+    .filter(Boolean)
+    .filter((p) => { const k = p.toLowerCase(); if (seenLoc.has(k)) return false; seenLoc.add(k); return true; })
+    .join(", ");
+  if (!location && /\bremote\b/i.test(title)) location = "Remote";
 
   // Search area = every targeted city/state/country across the whole group, plus
   // the real location — so the job is findable by any area it targets, kept
@@ -357,7 +392,7 @@ async function syncFeed(): Promise<number> {
       }
       if (!j || typeof j !== "object") return;
       const ref = str(j.referencenumber);
-      const key = ref ? baseRef(ref) : `${str(j.title)}|${str(j.url)}`.slice(0, 200);
+      const key = groupKey(ref, str(j.title), str(j.url));
       if (!key) return;
       if (!inRawTx) { db.exec("BEGIN"); inRawTx = true; }
       insertRawStmt.run(
@@ -493,7 +528,8 @@ async function syncFeed(): Promise<number> {
         validJobs++;
       }
 
-      // Allow small feeds after deduplication (e.g. Scale AI feed with 8 unique base references)
+      // Grouping by base ref + title yields ~47 distinct roles from this feed.
+      // Keep a low floor that still catches an empty/broken feed.
       const MIN_VALID_JOBS = Number(process.env.MIN_VALID_JOBS || 1);
       if (validJobs < MIN_VALID_JOBS) {
         throw new Error(`Validation failed: only ${validJobs} valid jobs; minimum is ${MIN_VALID_JOBS}.`);
@@ -854,7 +890,7 @@ function buildMcpServer() {
         type: "object",
         properties: {
           query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'software engineer', 'nurse'). A place may be included naturally (e.g. 'warehouse jobs in Ohio' or 'nurse near me').", minLength: 1, maxLength: 120 },
-          limit: { type: "integer", minimum: 1, maximum: 8, default: 6 },
+          limit: { type: "integer", minimum: 1, maximum: 24, default: 12 },
         },
         required: ["query"],
       },
@@ -909,7 +945,7 @@ function buildMcpServer() {
           content: [{ type: "text", text: "Please provide a search query (1–120 characters)." }],
         };
       }
-      const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 6, 8));
+      const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 12, 24));
 
       // Privacy-preserving location handling: there is no raw location input.
       // A destination may be written into the query ("... in Dallas, Texas"),
