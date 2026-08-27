@@ -1,5 +1,5 @@
 // ============================================================================
-// Joby Job Search (XML Feed, SQLite)
+// Scale AI Job Search (XML Feed, SQLite)
 //
 // This server syncs job data from an XML feed into a local SQLite database,
 // allowing fast full-text searching (FTS5) with low memory usage.
@@ -24,18 +24,18 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// TODO: paste the Joby XML feed URL below (or set JOBY_FEED_URL in the environment).
+// TODO: paste the Scale AI XML feed URL below (or set SCALE_AI_FEED_URL in the environment).
 const FEED_URL =
-  process.env.JOBY_FEED_URL ||
-  "https://joveo-outbound-feeds-prod.s3-accelerate.amazonaws.com/joveo-8bc66f8d/e52b8c05.xml?user=joveotest";
+  process.env.SCALE_AI_FEED_URL ||
+  "https://joveo-e30ca98e.s3-accelerate.amazonaws.com/79410aa9.xml";
 
 // Apply/redirect link host to lock the feed to (e.g. "xxxx.jometer.com").
-// Once you have the feed, set JOBY_APPLY_HOST so only that host is accepted.
+// Once you have the feed, set SCALE_AI_APPLY_HOST so only that host is accepted.
 // While empty, any https:// apply URL is accepted (fine for local testing).
-const APPLY_URL_HOST = (process.env.JOBY_APPLY_HOST || "tnl2.jometer.com").trim();
+const APPLY_URL_HOST = (process.env.SCALE_AI_APPLY_HOST || "").trim();
 
 // Public domain the widget is served from (used for the ChatGPT App CSP).
-const WIDGET_DOMAIN = process.env.JOBY_WIDGET_DOMAIN || "https://mcp.joby.joveo.com";
+const WIDGET_DOMAIN = process.env.SCALE_AI_WIDGET_DOMAIN || "https://mcp.scale-ai.joveo.com";
 
 // How often to re-download the feed and refresh the table (default 1 hour).
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60 * 60 * 1000);
@@ -46,7 +46,7 @@ const FEED_FETCH_TIMEOUT_MS = Number(process.env.FEED_FETCH_TIMEOUT_MS || 600000
 // Where the SQLite file lives. Use ":memory:" to keep it in RAM instead.
 const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "data", "jobs.db");
 
-const WIDGET_URI = "ui://joby/job-cards-v1.html";
+const WIDGET_URI = "ui://scale-ai/job-cards-v1.html";
 
 const REDIRECT_DOMAINS = APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [];
 
@@ -176,7 +176,7 @@ function normalizeCountry(raw: unknown): string {
 // Drop listings that promote or enable real-money gambling (casino testing,
 // wagering, sportsbooks, etc.), which conflict with the platform's gambling
 // and general-audience rules. Applied at sync time so excluded jobs never
-// enter the database. Override the term list with JOBY_EXCLUDE_TERMS
+// enter the database. Override the term list with SCALE_AI_EXCLUDE_TERMS
 // (comma-separated); set it to an empty value to disable exclusion entirely.
 // ----------------------------------------------------
 function escapeRegExp(s: string): string {
@@ -201,8 +201,8 @@ const DEFAULT_EXCLUDE_TERMS = [
 ];
 
 const EXCLUDE_TERMS =
-  process.env.JOBY_EXCLUDE_TERMS !== undefined
-    ? process.env.JOBY_EXCLUDE_TERMS.split(",").map((t) => t.trim()).filter(Boolean)
+  process.env.SCALE_AI_EXCLUDE_TERMS !== undefined
+    ? process.env.SCALE_AI_EXCLUDE_TERMS.split(",").map((t) => t.trim()).filter(Boolean)
     : DEFAULT_EXCLUDE_TERMS;
 
 const EXCLUDE_RE = EXCLUDE_TERMS.length
@@ -792,27 +792,27 @@ app.use(cors({
 }));
 app.use(express.static(path.join(__dirname, "..", "public")));
 
-app.get("/", (req, res) => res.json({ name: "Joby ChatGPT XML Feed App (SQLite)", status: "running", mcp: "/mcp" }));
+app.get("/", (req, res) => res.json({ name: "Scale AI ChatGPT XML Feed App (SQLite)", status: "running", mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   if (lastSync === 0) {
-    res.status(503).json({ status: "syncing", service: "joby-chatgpt-xmlfeed" });
+    res.status(503).json({ status: "syncing", service: "scale-ai-chatgpt-xmlfeed" });
     return;
   }
   const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
   const n = row ? row.n : 0;
-  res.json({ status: "ok", service: "joby-chatgpt-xmlfeed", backend: "sqlite", version: "1.0.0", jobs: n, lastSync });
+  res.json({ status: "ok", service: "scale-ai-chatgpt-xmlfeed", backend: "sqlite", version: "1.0.0", jobs: n, lastSync });
 });
 
 
 
 function buildMcpServer() {
   const server = new Server(
-    { name: "Joby - AI Job Search (XML Feed, SQLite)", version: "1.0.0" },
+    { name: "Scale AI - AI Job Search (XML Feed, SQLite)", version: "1.0.0" },
     { capabilities: { tools: {}, resources: {} } }
   );
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: [{ uri: WIDGET_URI, name: "Joby Job Cards", mimeType: "text/html;profile=mcp-app" }],
+    resources: [{ uri: WIDGET_URI, name: "Scale AI Job Cards", mimeType: "text/html;profile=mcp-app" }],
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
@@ -842,7 +842,7 @@ function buildMcpServer() {
             resource_domains: [],
             redirect_domains: REDIRECT_DOMAINS
           },
-          "openai/widgetDescription": "Displays matching Joby job listings in job cards.",
+          "openai/widgetDescription": "Displays matching Scale AI job listings in job cards.",
         },
       }],
     } as any;
@@ -850,9 +850,9 @@ function buildMcpServer() {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [{
-      name: "search_joby_job_listings",
-      title: "Search Joby job listings",
-      description: "Searches current Joby job listings by role or keyword. To filter by place, include it in the query text (e.g. 'nurse in Dallas, Texas'); for 'near me' searches the tool uses the approximate location the client provides. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Joby.",
+      name: "search_scale-ai_job_listings",
+      title: "Search Scale AI job listings",
+      description: "Searches current Scale AI job listings by role or keyword. To filter by place, include it in the query text (e.g. 'nurse in Dallas, Texas'); for 'near me' searches the tool uses the approximate location the client provides. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Scale AI.",
       inputSchema: {
         type: "object",
         properties: {
@@ -894,13 +894,13 @@ function buildMcpServer() {
         },
         required: ["type", "data"],
       },
-      annotations: { title: "Search Joby job listings", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+      annotations: { title: "Search Scale AI job listings", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
       _meta: { ui: { resourceUri: WIDGET_URI } },
     } as any],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name !== "search_joby_job_listings") throw new Error("Tool not found");
+    if (request.params.name !== "search_scale-ai_job_listings") throw new Error("Tool not found");
     const args = request.params.arguments as any;
 
     try {
@@ -948,7 +948,7 @@ function buildMcpServer() {
       } else if (result.total === 0) {
         textContent = `No matching jobs found for "${q}". Try different keywords or a broader search term.`;
       } else {
-        textContent = `Found ${result.total} Joby opportunities.`;
+        textContent = `Found ${result.total} Scale AI opportunities.`;
       }
 
       return {
@@ -961,10 +961,10 @@ function buildMcpServer() {
         _meta: { ui: { resourceUri: WIDGET_URI } },
       } as any;
     } catch (error) {
-      console.error("search_joby_job_listings error:", error);
+      console.error("search_scale-ai_job_listings error:", error);
       return {
         isError: true,
-        content: [{ type: "text", text: "Sorry, Joby job search is temporarily unavailable. Please try again in a moment." }],
+        content: [{ type: "text", text: "Sorry, Scale AI job search is temporarily unavailable. Please try again in a moment." }],
       };
     }
   });
@@ -994,13 +994,17 @@ app.all("/mcp", async (req, res) => {
 const PORT = process.env.PORT || 3001;
 
 async function start() {
-  const count = await syncFeed();
-  console.log(`Initial feed sync completed: ${count} jobs`);
-
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Feed: ${FEED_URL}`);
     console.log(`DB:   ${DB_PATH}`);
+  });
+
+  // Run the initial sync in the background so the server is immediately available
+  syncFeed().then(count => {
+    console.log(`Initial feed sync completed: ${count} jobs`);
+  }).catch(error => {
+    console.error("Initial feed sync failed:", error.message);
   });
 
   setInterval(() => {
@@ -1010,7 +1014,4 @@ async function start() {
   }, SYNC_INTERVAL_MS);
 }
 
-start().catch((error) => {
-  console.error("Startup failed:", error.message);
-  process.exit(1);
-});
+start();
