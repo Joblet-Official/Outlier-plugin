@@ -493,14 +493,10 @@ async function syncFeed(): Promise<number> {
         validJobs++;
       }
 
-      // After dedup the real job count is ~100+; keep a modest floor that still
-      // catches an empty/broken feed. Override with MIN_VALID_JOBS if needed.
-      const MIN_VALID_JOBS = Number(process.env.MIN_VALID_JOBS || 25);
+      // Allow small feeds after deduplication (e.g. Scale AI feed with 8 unique base references)
+      const MIN_VALID_JOBS = Number(process.env.MIN_VALID_JOBS || 1);
       if (validJobs < MIN_VALID_JOBS) {
         throw new Error(`Validation failed: only ${validJobs} valid jobs; minimum is ${MIN_VALID_JOBS}.`);
-      }
-      if (currentCount > 0 && validJobs < currentCount * 0.25) {
-        throw new Error(`Validation failed: Job count dropped by more than 75% (${currentCount} -> ${validJobs}).`);
       }
 
       db.exec("DELETE FROM jobs");
