@@ -226,13 +226,11 @@ function isExcludedJob(j: any): boolean {
 // ----------------------------------------------------
 // Deduplication
 //
-// The feed expands each real job into many geo-targeted copies: one canonical
-// row (referencenumber WITHOUT a "-expVer-<n>" suffix) that carries the true
-// job location, plus copies "<ref>-expVer-<n>" whose city/state are surrounding
-// *targeting* areas — not where the job actually is. We collapse each group to
-// one listing so the same job isn't shown hundreds of times, display the real
-// (canonical) location, and keep every targeted area only in the hidden search
-// blob so the job is still findable by area without mislabeling its location.
+// The feed expands each role into many location copies: a base referencenumber
+// plus "<ref>-expVer-<n>" variants, each carrying its own city/state/country.
+// We surface every distinct (role × location) as its own listing so all jobs
+// appear with their exact feed location, collapsing only exact duplicates (the
+// same role in the same place repeated across expansion versions).
 // ----------------------------------------------------
 function baseRef(ref: string): string {
   return ref.replace(/-expVer-\d+$/i, "");
@@ -243,18 +241,22 @@ function normTitle(t: string): string {
   return t.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-// Canonical job-identity key used to group/dedup raw feed rows.
+// Listing-identity key used to group/dedup raw feed rows.
 //
 // This feed reuses a SINGLE base referencenumber across many DISTINCT roles
-// (e.g. base 4549070005 holds ~39 different developer jobs), each expanded to
-// ~100+ targeting locations via a "-expVer-<n>" suffix. Grouping by base ref
-// alone therefore collapses genuinely different jobs into one. Combining the
-// base ref with the normalized title keeps real roles separate while still
-// folding each job's location-expansions together into one listing.
-function groupKey(ref: string, title: string, url: string): string {
+// (e.g. base 4549070005 holds ~39 different developer jobs), each further
+// expanded to ~100+ locations via a "-expVer-<n>" suffix — and EVERY expansion
+// carries its own real city/state/country. We surface each (role × location) as
+// its own listing so all jobs show with their exact feed location, while still
+// folding away exact duplicates (same role, same place, repeated expansions).
+function groupKey(
+  ref: string, title: string, url: string,
+  city: string, state: string, country: string
+): string {
   const nt = normTitle(title);
-  if (ref) return `${baseRef(ref)}|${nt}`;
-  return `${nt}|${str(url)}`.slice(0, 200);
+  const loc = [city, state, country].map((s) => s.toLowerCase().trim()).join("|");
+  if (ref) return `${baseRef(ref)}|${nt}|${loc}`;
+  return `${nt}|${loc}|${str(url)}`.slice(0, 200);
 }
 
 function isCanonicalRef(ref: string): boolean {
@@ -282,24 +284,18 @@ function mapGroup(baseKey: string, group: any[]): Row {
   const category = str(rep.category);
   const workplace = str(rep.location); // XML 'location' = workplace name
 
-  // Real job location: prefer the canonical row's geo; otherwise a location
-  // embedded in the title; otherwise leave it unspecified rather than guessing
-  // from a targeting city.
-  let city = "", state = "", country = "", postcode = "";
-  const locSource = canonical ?? null;
-  if (locSource) {
-    city = str(locSource.city);
-    state = str(locSource.state);
-    country = normalizeCountry(locSource.country);
-    postcode = str(locSource.postalcode);
-  } else {
+  // Real job location = this listing's own city/state/country from the feed
+  // (every row in the group shares the same place). Fall back to a location
+  // embedded in the title, then to "Remote" for genuinely place-less rows.
+  let city = str(rep.city);
+  let state = str(rep.state);
+  let country = normalizeCountry(rep.country);
+  let postcode = str(rep.postalcode);
+  if (!(city || state || country)) {
     const t = titleLocation(title);
     if (t) { city = t.city; state = t.state; country = "United States"; }
   }
-  const url = str((canonical ?? rep).url);
-  // Most roles in this feed are remote and carry only targeting cities (kept in
-  // the search blob), never a real location — so show "Remote" from the title
-  // rather than leaving the card location blank or mislabeling a targeting city.
+  const url = str(rep.url);
   const seenLoc = new Set<string>();
   let location = [city, state, country]
     .filter(Boolean)
@@ -392,7 +388,10 @@ async function syncFeed(): Promise<number> {
       }
       if (!j || typeof j !== "object") return;
       const ref = str(j.referencenumber);
-      const key = groupKey(ref, str(j.title), str(j.url));
+      const key = groupKey(
+        ref, str(j.title), str(j.url),
+        str(j.city), str(j.state), str(j.country)
+      );
       if (!key) return;
       if (!inRawTx) { db.exec("BEGIN"); inRawTx = true; }
       insertRawStmt.run(
