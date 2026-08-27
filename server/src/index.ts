@@ -541,7 +541,7 @@ function parseSearch(rawQuery: unknown, explicitLocation?: unknown): { q: string
 
   location = normalizeLocationInput(location);
 
-  const cleaned = q.replace(/\b(jobs|openings|vacancies|opportunities|listings|positions|roles)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const cleaned = q.replace(/\b(jobs|openings|vacancies|opportunities|listings|positions|roles|scale|ai|outlier|joby|joveo)\b/gi, " ").replace(/\s+/g, " ").trim();
   q = cleaned;
 
   return { q, location };
@@ -738,28 +738,29 @@ function searchDb(q: string, location: string, limit: number): { total: number; 
   const tokens = ftsTokens(q);
 
   if (tokens.length) {
-    // Text search via the FTS5 index; location (if any) filters matched rows.
-    // First try a precise AND of all tokens. If that yields nothing (e.g. one
-    // token is misspelled, rare, or extraneous), fall back to an OR so a single
-    // bad token can't zero out an otherwise-good query. bm25 still surfaces the
-    // best (most tokens matched) rows first. This keeps results stable across
-    // the minor query-wording variations ChatGPT sends for the same request.
     let result = runFtsQuery(tokens.join(" AND "), locTokens, locParams, limit);
     if (result.total === 0 && tokens.length > 1) {
       result = runFtsQuery(tokens.join(" OR "), locTokens, locParams, limit);
     }
-    return result;
+    if (result.total > 0) {
+      return result;
+    }
   }
 
-  // No searchable query text — require at least a location filter, never return everything.
-  if (!locTokens.length) {
-    return { total: 0, jobs: [] };
+  // If location is provided, filter by location
+  if (locTokens.length) {
+    const whereSql = "WHERE " + locTokens.map(() => "(' ' || loc_blob || ' ') LIKE ?").join(" AND ");
+    const totalRow2 = db.prepare(`SELECT COUNT(*) AS n FROM jobs ${whereSql}`).get(...locParams) as { n: number } | undefined;
+    const total2 = totalRow2 ? totalRow2.n : 0;
+    const rows2 = db.prepare(`SELECT * FROM jobs ${whereSql} ORDER BY title ASC LIMIT ?`).all(...locParams, limit) as unknown as Row[];
+    return { total: total2, jobs: rows2 };
   }
-  const whereSql = "WHERE " + locTokens.map(() => "(' ' || loc_blob || ' ') LIKE ?").join(" AND ");
-  const totalRow2 = db.prepare(`SELECT COUNT(*) AS n FROM jobs ${whereSql}`).get(...locParams) as { n: number } | undefined;
-  const total2 = totalRow2 ? totalRow2.n : 0;
-  const rows2 = db.prepare(`SELECT * FROM jobs ${whereSql} ORDER BY title ASC LIMIT ?`).all(...locParams, limit) as unknown as Row[];
-  return { total: total2, jobs: rows2 };
+
+  // Fallback: If no query tokens match or query was general, return featured/available jobs
+  const totalRowFallback = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
+  const totalFallback = totalRowFallback ? totalRowFallback.n : 0;
+  const rowsFallback = db.prepare("SELECT * FROM jobs LIMIT ?").all(limit) as unknown as Row[];
+  return { total: totalFallback, jobs: rowsFallback };
 }
 
 function toClientJob(r: Row) {
