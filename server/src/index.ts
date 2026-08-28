@@ -865,13 +865,13 @@ function buildMcpServer() {
           ui: {
             domain: WIDGET_DOMAIN,
             prefersBorder: true,
-            csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
+            csp: { connectDomains: [], resourceDomains: WIDGET_DOMAIN ? [WIDGET_DOMAIN] : [], frameDomains: [] },
           },
           "openai/widgetDomain": WIDGET_DOMAIN,
           "openai/widgetPrefersBorder": true,
           "openai/widgetCSP": {
             connect_domains: [],
-            resource_domains: [],
+            resource_domains: WIDGET_DOMAIN ? [WIDGET_DOMAIN] : [],
             redirect_domains: REDIRECT_DOMAINS
           },
           "openai/widgetDescription": "Displays matching Outlier job listings in job cards.",

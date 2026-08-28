@@ -234,7 +234,12 @@
       brand.className = 'brand';
       if (OUTLIER_LOGO && OUTLIER_LOGO.indexOf('data:') === 0) {
         const img = document.createElement('img');
-        img.src = OUTLIER_LOGO; img.alt = 'Outlier';
+        img.src = OUTLIER_LOGO;
+        img.alt = '';
+        img.onerror = () => {
+          img.src = '/outlier-logo.png';
+          img.onerror = () => img.remove();
+        };
         brand.appendChild(img);
       }
       const wordmark = document.createElement('span');
