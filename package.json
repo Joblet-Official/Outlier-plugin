@@ -1,7 +1,7 @@
 {
-  "name": "scale-ai-job-search",
+  "name": "outlier-job-search",
   "version": "1.0.0",
-  "description": "MCP integration for searching current Scale AI job listings.",
+  "description": "MCP integration for searching current Outlier job listings.",
   "main": "server/src/index.ts",
   "scripts": {
     "start": "node --import tsx server/src/index.ts",

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scale AI Jobs</title>
+  <title>Outlier Jobs</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -182,7 +182,7 @@
 
   <script type="module">
     const root = document.getElementById('root');
-    const SCALE_LOGO = "data:image/png;base64,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";
+    const OUTLIER_LOGO = "data:image/png;base64,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";
     let dataReceived = false;
 
     setTimeout(() => { if (!dataReceived) root.innerHTML = ''; }, 3500);
@@ -232,14 +232,14 @@
       header.className = 'header';
       const brand = document.createElement('div');
       brand.className = 'brand';
-      if (SCALE_LOGO && SCALE_LOGO.indexOf('data:') === 0) {
+      if (OUTLIER_LOGO && OUTLIER_LOGO.indexOf('data:') === 0) {
         const img = document.createElement('img');
-        img.src = SCALE_LOGO; img.alt = 'Scale AI';
+        img.src = OUTLIER_LOGO; img.alt = 'Outlier';
         brand.appendChild(img);
       }
       const wordmark = document.createElement('span');
       wordmark.className = 'wordmark';
-      wordmark.textContent = 'Scale AI';
+      wordmark.textContent = 'Outlier';
       brand.appendChild(wordmark);
       header.appendChild(brand);
 
@@ -255,8 +255,8 @@
       carousel.className = 'carousel';
 
       data.jobs.forEach(job => {
-        const company = job.employer || 'Scale AI';
-        const initialStr = (company.trim()[0] || 'S').toUpperCase();
+        const company = job.employer || 'Outlier';
+        const initialStr = (company.trim()[0] || 'O').toUpperCase();
         const safeUrl = String(job.applicationUrl || '#');
 
         const card = document.createElement('div');
