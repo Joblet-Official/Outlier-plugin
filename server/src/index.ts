@@ -46,7 +46,9 @@ const FEED_FETCH_TIMEOUT_MS = Number(process.env.FEED_FETCH_TIMEOUT_MS || 600000
 // Where the SQLite file lives. Use ":memory:" to keep it in RAM instead.
 const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "data", "jobs.db");
 
-const WIDGET_URI = "ui://outlier/job-cards-v1.html";
+// ChatGPT uses the resource URI as the widget cache key. Bump this version
+// whenever the widget HTML or resource metadata changes.
+const WIDGET_URI = "ui://outlier/job-cards-v2.html";
 
 const REDIRECT_DOMAINS = APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [];
 
@@ -865,16 +867,16 @@ function buildMcpServer() {
           ui: {
             domain: WIDGET_DOMAIN,
             prefersBorder: true,
-            csp: { connectDomains: [], resourceDomains: WIDGET_DOMAIN ? [WIDGET_DOMAIN] : [], frameDomains: [] },
+            csp: { connectDomains: [], resourceDomains: [], frameDomains: [] },
           },
           "openai/widgetDomain": WIDGET_DOMAIN,
           "openai/widgetPrefersBorder": true,
           "openai/widgetCSP": {
             connect_domains: [],
-            resource_domains: WIDGET_DOMAIN ? [WIDGET_DOMAIN] : [],
+            resource_domains: [],
             redirect_domains: REDIRECT_DOMAINS
           },
-          "openai/widgetDescription": "Displays matching Outlier job listings in job cards.",
+          "openai/widgetDescription": "Displays up to eight matching job listings in a compact, accessible carousel with one application action per listing.",
         },
       }],
     } as any;
@@ -927,7 +929,10 @@ function buildMcpServer() {
         required: ["type", "data"],
       },
       annotations: { title: "Search Outlier job listings", readOnlyHint: true, openWorldHint: false, destructiveHint: false },
-      _meta: { ui: { resourceUri: WIDGET_URI } },
+      _meta: {
+        ui: { resourceUri: WIDGET_URI },
+        "openai/outputTemplate": WIDGET_URI,
+      },
     } as any],
   }));
 
