@@ -1052,9 +1052,7 @@ function buildMcpServer() {
 
 // OpenAI domain verification challenge
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-  const token = process.env.OPENAI_APPS_CHALLENGE_TOKEN;
-  if (!token) return res.status(500).send("Missing OPENAI_APPS_CHALLENGE_TOKEN");
-  res.type("text/plain").send(token);
+  res.type("text/plain").send("Oc24tmDJOKcmnXx1u9pJy7jklW2cxx9NuwKMGz5VsCA");
 });
 
 app.all("/mcp", async (req, res) => {
