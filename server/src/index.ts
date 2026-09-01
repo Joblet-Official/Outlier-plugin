@@ -24,18 +24,55 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// TODO: paste the Outlier XML feed URL below (or set OUTLIER_FEED_URL in the environment).
+// Production feed. Override only when deploying a different approved Outlier feed.
 const FEED_URL =
   process.env.OUTLIER_FEED_URL ||
   "https://joveo-e30ca98e.s3-accelerate.amazonaws.com/79410aa9.xml";
 
-// Apply/redirect link host to lock the feed to (e.g. "xxxx.jometer.com").
-// Once you have the feed, set OUTLIER_APPLY_HOST so only that host is accepted.
-// While empty, any https:// apply URL is accepted (fine for local testing).
-const APPLY_URL_HOST = (process.env.OUTLIER_APPLY_HOST || "").trim();
+function httpsHost(value: string, label: string): string {
+  const candidate = /^https:\/\//i.test(value) ? value : `https://${value}`;
+  const parsed = new URL(candidate);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`${label} must be a bare HTTPS host.`);
+  }
+  return parsed.host.toLowerCase();
+}
+
+function httpsOrigin(value: string, label: string): string {
+  const parsed = new URL(value);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error(`${label} must be an HTTPS origin without a path, query, or fragment.`);
+  }
+  return parsed.origin;
+}
+
+// Every current feed link resolves through this application host. Keeping a
+// production default makes the server-side URL allowlist and the widget CSP
+// agree even when the optional environment override is absent.
+const APPLY_URL_HOST = httpsHost(
+  (process.env.OUTLIER_APPLY_HOST || "tnl2.jometer.com").trim(),
+  "OUTLIER_APPLY_HOST"
+);
 
 // Public domain the widget is served from (used for the ChatGPT App CSP).
-const WIDGET_DOMAIN = process.env.OUTLIER_WIDGET_DOMAIN || "https://mcp.outlier.joveo.com";
+const WIDGET_DOMAIN = httpsOrigin(
+  (process.env.OUTLIER_WIDGET_DOMAIN || "https://mcp.outlier.joveo.com").trim(),
+  "OUTLIER_WIDGET_DOMAIN"
+);
 
 // How often to re-download the feed and refresh the table (default 1 hour).
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60 * 60 * 1000);
@@ -48,9 +85,9 @@ const DB_PATH = process.env.SQLITE_DB_PATH || path.join(__dirname, "..", "..", "
 
 // ChatGPT uses the resource URI as the widget cache key. Bump this version
 // whenever the widget HTML or resource metadata changes.
-const WIDGET_URI = "ui://outlier/job-cards-v2.html";
+const WIDGET_URI = "ui://outlier/job-cards-v3.html";
 
-const REDIRECT_DOMAINS = APPLY_URL_HOST ? ["https://" + APPLY_URL_HOST] : [];
+const REDIRECT_DOMAINS = ["https://" + APPLY_URL_HOST];
 
 // ----------------------------------------------------
 // Database setup
@@ -344,6 +381,22 @@ function mapGroup(baseKey: string, group: any[]): Row {
 // ----------------------------------------------------
 let lastSync = 0;
 let syncing = false;
+let initialSyncPromise: Promise<number> | null = null;
+
+function ensureInitialSync(): Promise<number> {
+  if (lastSync > 0) {
+    const row = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
+    return Promise.resolve(row ? row.n : 0);
+  }
+  if (!initialSyncPromise) {
+    initialSyncPromise = syncFeed().catch((error) => {
+      // Permit a later request to retry after a transient feed failure.
+      initialSyncPromise = null;
+      throw error;
+    });
+  }
+  return initialSyncPromise;
+}
 
 // Sync strategy (memory-safe for very large feeds):
 //   Phase 1 — stream the HTTP response and slice it into individual <job>…</job>
@@ -389,6 +442,7 @@ async function syncFeed(): Promise<number> {
         return; // skip a malformed job rather than failing the whole sync
       }
       if (!j || typeof j !== "object") return;
+      if (isExcludedJob(j)) return;
       const ref = str(j.referencenumber);
       const key = groupKey(
         ref, str(j.title), str(j.url),
@@ -515,16 +569,16 @@ async function syncFeed(): Promise<number> {
         const r = mapGroup(b.base_ref, group);
         if (seen.has(r.id)) continue;
         if (!r.id || !r.title || !r.company || !r.url) continue;
-        if (!r.url.startsWith("https://")) continue;
-        if (APPLY_URL_HOST) {
-          try {
-            if (new URL(r.url).host !== APPLY_URL_HOST) continue;
-          } catch { continue; }
-        }
+        let applicationUrl: string;
+        try {
+          const parsedUrl = new URL(r.url);
+          if (parsedUrl.protocol !== "https:" || parsedUrl.host.toLowerCase() !== APPLY_URL_HOST) continue;
+          applicationUrl = parsedUrl.href;
+        } catch { continue; }
         seen.add(r.id);
         insertStagingStmt.run(
           r.id, r.title, r.company, r.workplace, r.city, r.state, r.country, r.postcode,
-          r.type, r.contractType, r.salary, r.hours, r.summary, r.url, r.category, r.location, r.search_blob, r.loc_blob
+          r.type, r.contractType, r.salary, r.hours, r.summary, applicationUrl, r.category, r.location, r.search_blob, r.loc_blob
         );
         validJobs++;
       }
@@ -574,7 +628,7 @@ function parseSearch(rawQuery: unknown, explicitLocation?: unknown): { q: string
 
   location = normalizeLocationInput(location);
 
-  const cleaned = q.replace(/\b(jobs|openings|vacancies|opportunities|listings|positions|roles|scale|ai|outlier|joby|joveo)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const cleaned = q.replace(/\b(jobs|openings|vacancies|opportunities|listings|positions|roles)\b/gi, " ").replace(/\s+/g, " ").trim();
   q = cleaned;
 
   return { q, location };
@@ -775,9 +829,9 @@ function searchDb(q: string, location: string, limit: number): { total: number; 
     if (result.total === 0 && tokens.length > 1) {
       result = runFtsQuery(tokens.join(" OR "), locTokens, locParams, limit);
     }
-    if (result.total > 0) {
-      return result;
-    }
+    // A failed role/keyword search must remain empty. Falling through to a
+    // location-only or unfiltered query would return unrelated listings.
+    return result;
   }
 
   // If location is provided, filter by location
@@ -789,11 +843,8 @@ function searchDb(q: string, location: string, limit: number): { total: number; 
     return { total: total2, jobs: rows2 };
   }
 
-  // Fallback: If no query tokens match or query was general, return featured/available jobs
-  const totalRowFallback = db.prepare("SELECT COUNT(*) AS n FROM jobs").get() as { n: number } | undefined;
-  const totalFallback = totalRowFallback ? totalRowFallback.n : 0;
-  const rowsFallback = db.prepare("SELECT * FROM jobs LIMIT ?").all(limit) as unknown as Row[];
-  return { total: totalFallback, jobs: rowsFallback };
+  // No searchable query text and no location: never return the whole feed.
+  return { total: 0, jobs: [] };
 }
 
 function toClientJob(r: Row) {
@@ -855,6 +906,7 @@ function buildMcpServer() {
     let html: string;
     try { html = fs.readFileSync(widgetPath, "utf-8"); }
     catch { html = "<html><body><p>Widget not found</p></body></html>"; }
+    html = html.replace("__OUTLIER_APPLY_HOST__", APPLY_URL_HOST);
     // Per the OpenAI Apps UI spec, component _meta (widget domain, CSP,
     // redirect permissions) belongs ON the individual resource contents object,
     // not at the top level of the read result.
@@ -886,14 +938,16 @@ function buildMcpServer() {
     tools: [{
       name: "search_outlier_job_listings",
       title: "Search Outlier job listings",
-      description: "Searches current Outlier job listings by role or keyword. To filter by place, include it in the query text (e.g. 'nurse in Dallas, Texas'); for 'near me' searches the tool uses the approximate location the client provides. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Outlier.",
+      description: "Searches current Outlier AI job listings by role or keyword and, when provided, city, state, or country. Returns matching job details and an external application link. Do not use this tool to apply, submit forms, or search employers outside of Outlier AI.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'software engineer', 'nurse'). A place may be included naturally (e.g. 'warehouse jobs in Ohio' or 'nurse near me').", minLength: 1, maxLength: 120 },
-          limit: { type: "integer", minimum: 1, maximum: 24, default: 12 },
+          query: { type: "string", description: "The job title, role, or keyword to search for (e.g. 'AI trainer' or 'software engineer'). Do not include a location here.", minLength: 1, maxLength: 120 },
+          location: { type: "string", description: "City, state, or country to filter by. Omit if the user did not specify one.", maxLength: 100 },
+          limit: { type: "integer", minimum: 1, maximum: 8, default: 6 },
         },
         required: ["query"],
+        additionalProperties: false,
       },
       outputSchema: {
         type: "object",
@@ -941,6 +995,11 @@ function buildMcpServer() {
     const args = request.params.arguments as any;
 
     try {
+      // Never answer from an empty, not-yet-synchronized database. The server
+      // still starts immediately so ChatGPT can fetch the widget during a cold
+      // start while the larger feed is being prepared.
+      await ensureInitialSync();
+
       // --- Server-side input validation ---
       const rawQuery = typeof args.query === "string" ? args.query.trim() : "";
       if (!rawQuery || rawQuery.length > 120) {
@@ -949,43 +1008,25 @@ function buildMcpServer() {
           content: [{ type: "text", text: "Please provide a search query (1–120 characters)." }],
         };
       }
-      const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 12, 24));
+      const rawLocation = typeof args.location === "string" ? args.location.trim().slice(0, 100) : "";
+      const limit = Math.max(1, Math.min(Number.isInteger(args.limit) ? args.limit : 6, 8));
 
-      // Privacy-preserving location handling: there is no raw location input.
-      // A destination may be written into the query ("... in Dallas, Texas"),
-      // and "near me" intent uses the coarse, client-supplied approximate
-      // location from the request _meta side channel — never a precise value.
-      const meta = (request.params._meta ?? {}) as Record<string, any>;
-      const coarse = meta["openai/userLocation"];
-      let coarseLocation = "";
-      if (typeof coarse === "string") {
-        coarseLocation = coarse;
-      } else if (coarse && typeof coarse === "object") {
-        coarseLocation = [coarse.city, coarse.region ?? coarse.state, coarse.country]
-          .filter(Boolean)
-          .map(String)
-          .join(", ");
-      }
-
-      const nearMeRe = /\b(near\s*me|near\s*by|nearby|around\s*me|close\s*to\s*me|in\s+my\s+area)\b/i;
-      const wantsNearMe = nearMeRe.test(rawQuery);
-      const cleanedQuery = rawQuery.replace(nearMeRe, " ").replace(/\s+/g, " ").trim();
-
-      let { q, location } = parseSearch(cleanedQuery);
-      if (!location && wantsNearMe && coarseLocation) {
-        location = normalizeLocationInput(coarseLocation);
-      }
+      const { q, location } = parseSearch(rawQuery, rawLocation);
 
       const result = searchDb(q, location, limit);
       const jobs = result.jobs.map(toClientJob);
 
       let textContent: string;
-      if (result.total === 0 && location) {
+      if (result.total === 0 && location && q) {
         textContent = `No matching jobs found in "${location}" for "${q}". Would you like to broaden the search by removing the location filter?`;
-      } else if (result.total === 0) {
+      } else if (result.total === 0 && location) {
+        textContent = `No jobs found in "${location}". Try another location or add a role or keyword.`;
+      } else if (result.total === 0 && q) {
         textContent = `No matching jobs found for "${q}". Try different keywords or a broader search term.`;
+      } else if (result.total === 0) {
+        textContent = "No matching jobs found. Add a role, keyword, or location to narrow the search.";
       } else {
-        textContent = `Found ${result.total} Outlier opportunities.`;
+        textContent = `Found ${result.total} Outlier ${result.total === 1 ? "opportunity" : "opportunities"}.`;
       }
 
       return {
@@ -1011,7 +1052,9 @@ function buildMcpServer() {
 
 // OpenAI domain verification challenge
 app.get("/.well-known/openai-apps-challenge", (_req, res) => {
-  res.type("text/plain").send("Oc24tmDJOKcmnXx1u9pJy7jklW2cxx9NuwKMGz5VsCA");
+  const token = process.env.OPENAI_APPS_CHALLENGE_TOKEN;
+  if (!token) return res.status(500).send("Missing OPENAI_APPS_CHALLENGE_TOKEN");
+  res.type("text/plain").send(token);
 });
 
 app.all("/mcp", async (req, res) => {
@@ -1037,10 +1080,9 @@ async function start() {
     console.log(`DB:   ${DB_PATH}`);
   });
 
-  // Run the initial sync in the background so the server is immediately available
-  syncFeed().then(count => {
+  ensureInitialSync().then((count) => {
     console.log(`Initial feed sync completed: ${count} jobs`);
-  }).catch(error => {
+  }).catch((error) => {
     console.error("Initial feed sync failed:", error.message);
   });
 

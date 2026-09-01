@@ -233,6 +233,7 @@
   <script type="module">
     const root = document.getElementById("root");
     const MAX_VISIBLE_CARDS = 8;
+    const ALLOWED_APPLY_HOST = "__OUTLIER_APPLY_HOST__";
     let dataReceived = false;
 
     // Old conversations can retain an iframe after its tool payload is gone.
@@ -263,21 +264,27 @@
       const cards = visibleJobs.map((job) => {
         const safeUrl = toSafeHttpsUrl(job.applicationUrl);
         const employer = job.employer || "Employer not listed";
-        const employmentType = job.schedule || job.contractType || "Type not listed";
+        const employmentType = job.schedule || job.contractType || "";
+        const locationRow = job.location
+          ? `<div class="meta-row">
+              <span class="meta-icon" aria-hidden="true">📍</span>
+              <span class="meta-value">${escapeHtml(job.location)}</span>
+            </div>`
+          : "";
+        const employmentTypeRow = employmentType
+          ? `<div class="meta-row">
+              <span class="meta-icon" aria-hidden="true">💼</span>
+              <span class="meta-value">${escapeHtml(employmentType)}</span>
+            </div>`
+          : "";
 
         return `
           <article class="job-card">
             <div class="job-tag">Job match</div>
             <h3 class="job-title">${escapeHtml(job.title || "Open position")}</h3>
             <div class="job-meta">
-              <div class="meta-row">
-                <span class="meta-icon" aria-hidden="true">📍</span>
-                <span class="meta-value">${escapeHtml(job.location || "Remote")}</span>
-              </div>
-              <div class="meta-row">
-                <span class="meta-icon" aria-hidden="true">💼</span>
-                <span class="meta-value">${escapeHtml(employmentType)}</span>
-              </div>
+              ${locationRow}
+              ${employmentTypeRow}
               <div class="meta-row">
                 <span class="meta-icon" aria-hidden="true">🏢</span>
                 <span class="meta-value">${escapeHtml(employer)}</span>
@@ -311,7 +318,12 @@
     function toSafeHttpsUrl(value) {
       try {
         const url = new URL(String(value || ""));
-        return url.protocol === "https:" ? url.href : "";
+        if (url.protocol !== "https:") return "";
+        const host = ALLOWED_APPLY_HOST.trim().toLowerCase();
+        if (host && !host.startsWith("__") && url.host.toLowerCase() !== host) {
+          return "";
+        }
+        return url.href;
       } catch {
         return "";
       }
@@ -321,7 +333,7 @@
       if (!url) return;
       try {
         if (window.openai && typeof window.openai.openExternal === "function") {
-          window.openai.openExternal({ href: url });
+          window.openai.openExternal({ href: url, redirectUrl: false });
           return;
         }
       } catch {}
