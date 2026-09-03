@@ -183,6 +183,18 @@ const IS_REFRESH_WORKER = process.env.OUTLIER_REFRESH_WORKER === "1";
 // ChatGPT uses the resource URI as the widget cache key. Bump this version
 // whenever the widget HTML or resource metadata changes.
 const WIDGET_URI = "ui://outlier/job-cards-v6.html";
+// Every widget URI this server has ever advertised. ChatGPT caches the tool
+// definition per conversation, so a chat opened against an earlier version keeps
+// asking for that version's URI. Rejecting it produced a hard "Failed to fetch
+// template" error in those conversations. Serving the current template under a
+// superseded URI is strictly better: the reader sees a working card instead of an
+// error, and cache-busting still works because each new version adds a new URI.
+const SUPPORTED_WIDGET_URIS = new Set<string>([
+  WIDGET_URI,
+  "ui://outlier/job-cards-v3.html",
+  "ui://outlier/job-cards-v4.html",
+  "ui://outlier/job-cards-v5.html",
+]);
 const PUBLIC_ASSET_DIR = path.join(PROJECT_ROOT, "server", "public");
 const WIDGET_PATH = path.join(PUBLIC_ASSET_DIR, "widget", "job-cards.html");
 const APPLY_ORIGIN_PLACEHOLDER = "__OUTLIER_APPLY_ORIGIN__";
@@ -2659,7 +2671,7 @@ function buildMcpServer() {
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
-    if (req.params.uri !== WIDGET_URI) throw new Error("Resource not found");
+    if (!SUPPORTED_WIDGET_URIS.has(req.params.uri)) throw new Error("Resource not found");
 
     return {
       contents: [{
