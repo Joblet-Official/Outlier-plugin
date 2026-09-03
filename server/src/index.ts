@@ -182,7 +182,7 @@ const IS_REFRESH_WORKER = process.env.OUTLIER_REFRESH_WORKER === "1";
 
 // ChatGPT uses the resource URI as the widget cache key. Bump this version
 // whenever the widget HTML or resource metadata changes.
-const WIDGET_URI = "ui://outlier/job-cards-v6.html";
+const WIDGET_URI = "ui://outlier/job-cards-v7.html";
 // Every widget URI this server has ever advertised. ChatGPT caches the tool
 // definition per conversation, so a chat opened against an earlier version keeps
 // asking for that version's URI. Rejecting it produced a hard "Failed to fetch
@@ -194,6 +194,7 @@ const SUPPORTED_WIDGET_URIS = new Set<string>([
   "ui://outlier/job-cards-v3.html",
   "ui://outlier/job-cards-v4.html",
   "ui://outlier/job-cards-v5.html",
+  "ui://outlier/job-cards-v6.html",
 ]);
 const PUBLIC_ASSET_DIR = path.join(PROJECT_ROOT, "server", "public");
 const WIDGET_PATH = path.join(PUBLIC_ASSET_DIR, "widget", "job-cards.html");
@@ -2559,6 +2560,22 @@ app.use(cors({
   methods: ["POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "MCP-Protocol-Version", "Accept"],
 }));
+// The widget template is delivered through the MCP resource, which substitutes
+// the approved apply origin into it. The file on disk still holds the raw
+// placeholder, so serving it over HTTP would publish a build whose apply buttons
+// resolve nothing. Keep the rest of the public directory available and take the
+// widget directory out of static hosting entirely.
+function isWidgetAssetRequest(requestPath: string): boolean {
+  return requestPath.split("/").filter(Boolean)[0]?.toLowerCase() === "widget";
+}
+
+app.use((req, res, next) => {
+  if (isWidgetAssetRequest(req.path)) {
+    res.status(404).type("text/plain").send("Not found");
+    return;
+  }
+  next();
+});
 app.use(express.static(PUBLIC_ASSET_DIR));
 
 const parseMcpJson = express.json({

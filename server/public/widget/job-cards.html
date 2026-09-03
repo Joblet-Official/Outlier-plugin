@@ -126,6 +126,29 @@
       transform: translateY(-2px);
     }
 
+    /* One or two results should occupy the full width rather than sitting as a
+       narrow card against dead space. Above that the horizontal carousel is the
+       better pattern, so the fill mode is applied only to a small result set. */
+    .carousel.is-fill {
+      flex-wrap: wrap;
+      overflow-x: visible;
+      scroll-snap-type: none;
+    }
+
+    .carousel.is-fill .job-card {
+      flex: 1 1 260px;
+      max-width: none;
+      width: auto;
+    }
+
+    .job-summary {
+      color: var(--text-secondary);
+      font-size: 13.5px;
+      line-height: 1.5;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
     .job-tag {
       background: var(--outlier-accent-tint);
       border: 1px solid var(--outlier-border-tint);
@@ -370,11 +393,17 @@
         : validJobObjects.length;
       const total = Math.max(visibleJobs.length, declaredTotal);
 
+      // A lone card spans the full width, so it has room for the summary that
+      // would not fit in a 260px carousel tile.
+      const fillWidth = visibleJobs.length <= 2;
+      const withSummary = visibleJobs.length === 1;
+
       const cards = visibleJobs.map((job) => {
         const safeUrl = toAllowedApplicationUrl(job.applicationUrl);
         const title = job.title || "Open position";
         const organization = job.organization || "Organization not listed";
         const displayedLocation = job.location || job.workplace || "";
+        const summary = withSummary && typeof job.summary === "string" ? job.summary.trim() : "";
 
         return `
           <article class="job-card">
@@ -390,6 +419,7 @@
                 <span class="meta-value">${escapeHtml(organization)}</span>
               </div>
             </div>
+            ${summary ? `<p class="job-summary">${escapeHtml(summary)}</p>` : ""}
             ${safeUrl
               ? `<button type="button" data-url="${escapeHtml(safeUrl)}" class="apply-btn" aria-label="View and apply for ${escapeHtml(title)}">View &amp; Apply →</button>`
               : '<button type="button" class="apply-btn" disabled aria-disabled="true">Application unavailable</button>'}
@@ -397,17 +427,21 @@
       }).join("");
 
       const countLabel = `Showing ${visibleJobs.length} of ${total} ${total === 1 ? "result" : "results"}`;
+      // Nothing scrolls in fill mode, so the keyboard hint and the focusable
+      // scroll container would both be announcing an affordance that is not there.
       root.innerHTML = `
         <div class="header">
           <div class="result-count" role="status">${escapeHtml(countLabel)}</div>
         </div>
-        <p id="carousel-instructions" class="sr-only">Use the left and right arrow keys to move through the opportunities.</p>
-        <section class="carousel" role="region" tabindex="0" aria-describedby="carousel-instructions" aria-label="${escapeHtml(countLabel)} in the opportunities carousel">
+        ${fillWidth ? "" : `<p id="carousel-instructions" class="sr-only">Use the left and right arrow keys to move through the opportunities.</p>`}
+        <section class="carousel${fillWidth ? " is-fill" : ""}" ${fillWidth
+          ? `aria-label="${escapeHtml(countLabel)}"`
+          : `role="region" tabindex="0" aria-describedby="carousel-instructions" aria-label="${escapeHtml(countLabel)} in the opportunities carousel"`}>
           ${cards}
         </section>
         <p id="navigation-status" class="sr-only" aria-live="polite"></p>`;
       root.setAttribute("aria-busy", "false");
-      setupCarouselKeyboard();
+      if (!fillWidth) setupCarouselKeyboard();
     }
 
     function renderState(message) {
