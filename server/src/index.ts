@@ -182,7 +182,7 @@ const IS_REFRESH_WORKER = process.env.OUTLIER_REFRESH_WORKER === "1";
 
 // ChatGPT uses the resource URI as the widget cache key. Bump this version
 // whenever the widget HTML or resource metadata changes.
-const WIDGET_URI = "ui://outlier/job-cards-v7.html";
+const WIDGET_URI = "ui://outlier/job-cards-v8.html";
 // Every widget URI this server has ever advertised. ChatGPT caches the tool
 // definition per conversation, so a chat opened against an earlier version keeps
 // asking for that version's URI. Rejecting it produced a hard "Failed to fetch
@@ -195,6 +195,7 @@ const SUPPORTED_WIDGET_URIS = new Set<string>([
   "ui://outlier/job-cards-v4.html",
   "ui://outlier/job-cards-v5.html",
   "ui://outlier/job-cards-v6.html",
+  "ui://outlier/job-cards-v7.html",
 ]);
 const PUBLIC_ASSET_DIR = path.join(PROJECT_ROOT, "server", "public");
 const WIDGET_PATH = path.join(PUBLIC_ASSET_DIR, "widget", "job-cards.html");

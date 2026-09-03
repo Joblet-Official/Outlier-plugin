@@ -97,17 +97,18 @@
       border-radius: 12px;
       box-shadow: 0 2px 8px var(--card-shadow);
       display: flex;
-      flex: 0 0 min(260px, calc(100vw - 32px));
+      flex: 0 0 100%;
       flex-direction: column;
       gap: 12px;
-      max-width: min(260px, calc(100vw - 32px));
+      max-width: 100%;
       min-width: 0;
       overflow: hidden;
       padding: 18px;
       position: relative;
       scroll-snap-align: start;
+      scroll-snap-stop: always;
       transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-      width: min(260px, calc(100vw - 32px));
+      width: 100%;
     }
 
     .job-card::before {
@@ -126,19 +127,12 @@
       transform: translateY(-2px);
     }
 
-    /* One or two results should occupy the full width rather than sitting as a
-       narrow card against dead space. Above that the horizontal carousel is the
-       better pattern, so the fill mode is applied only to a small result set. */
-    .carousel.is-fill {
-      flex-wrap: wrap;
+    /* A single result has nothing to page through, so the scroll container and
+       its snap behaviour are switched off rather than left announcing an
+       affordance that is not there. */
+    .carousel.is-single {
       overflow-x: visible;
       scroll-snap-type: none;
-    }
-
-    .carousel.is-fill .job-card {
-      flex: 1 1 260px;
-      max-width: none;
-      width: auto;
     }
 
     .job-summary {
@@ -393,17 +387,16 @@
         : validJobObjects.length;
       const total = Math.max(visibleJobs.length, declaredTotal);
 
-      // A lone card spans the full width, so it has room for the summary that
-      // would not fit in a 260px carousel tile.
-      const fillWidth = visibleJobs.length <= 2;
-      const withSummary = visibleJobs.length === 1;
+      // Every card spans the full width and the carousel pages one listing at a
+      // time, so each card has room for its summary.
+      const singleResult = visibleJobs.length === 1;
 
       const cards = visibleJobs.map((job) => {
         const safeUrl = toAllowedApplicationUrl(job.applicationUrl);
         const title = job.title || "Open position";
         const organization = job.organization || "Organization not listed";
         const displayedLocation = job.location || job.workplace || "";
-        const summary = withSummary && typeof job.summary === "string" ? job.summary.trim() : "";
+        const summary = typeof job.summary === "string" ? job.summary.trim() : "";
 
         return `
           <article class="job-card">
@@ -433,15 +426,15 @@
         <div class="header">
           <div class="result-count" role="status">${escapeHtml(countLabel)}</div>
         </div>
-        ${fillWidth ? "" : `<p id="carousel-instructions" class="sr-only">Use the left and right arrow keys to move through the opportunities.</p>`}
-        <section class="carousel${fillWidth ? " is-fill" : ""}" ${fillWidth
+        ${singleResult ? "" : `<p id="carousel-instructions" class="sr-only">Showing one opportunity at a time. Use the left and right arrow keys to move through them.</p>`}
+        <section class="carousel${singleResult ? " is-single" : ""}" ${singleResult
           ? `aria-label="${escapeHtml(countLabel)}"`
           : `role="region" tabindex="0" aria-describedby="carousel-instructions" aria-label="${escapeHtml(countLabel)} in the opportunities carousel"`}>
           ${cards}
         </section>
         <p id="navigation-status" class="sr-only" aria-live="polite"></p>`;
       root.setAttribute("aria-busy", "false");
-      if (!fillWidth) setupCarouselKeyboard();
+      if (!singleResult) setupCarouselKeyboard();
     }
 
     function renderState(message) {

@@ -286,7 +286,7 @@ async function mcpRequest(child, method, params) {
 }
 
 async function readWidget(child) {
-  return mcpRequest(child, "resources/read", { uri: "ui://outlier/job-cards-v7.html" });
+  return mcpRequest(child, "resources/read", { uri: "ui://outlier/job-cards-v8.html" });
 }
 
 async function search(child, query, limit = 6) {
