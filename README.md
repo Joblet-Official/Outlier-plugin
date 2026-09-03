@@ -24,9 +24,8 @@ npm ci --omit=dev
 npm start
 ```
 
-A deployment must run `npm run build` and then serve `dist/index.js` with
-production dependencies only. `server/public` must ship alongside it: the
-server refuses to start if the widget template is missing.
+The container image (`Dockerfile`) builds `dist/` in a first stage and ships
+only production dependencies, the compiled server, and `server/public`.
 
 ## Persistent production storage
 
