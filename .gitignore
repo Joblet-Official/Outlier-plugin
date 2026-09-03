@@ -1,6 +1,11 @@
 node_modules/
-.env
 dist/
+.env
+*.log
 ngrok.exe
 ngrok.zip
-data/
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/snapshots/

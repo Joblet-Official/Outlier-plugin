@@ -1,11 +1,13 @@
 {
   "name": "outlier-job-search",
   "version": "1.0.0",
-  "description": "MCP integration for searching current Outlier job listings.",
-  "main": "server/src/index.ts",
+  "description": "MCP integration for searching current Outlier job listings supplied through Joveo.",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node --import tsx server/src/index.ts",
-    "test": "tsc --noEmit"
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "node --import tsx --test --test-concurrency=1 server/test/*.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": ">=22.5.0"
@@ -18,7 +20,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "fast-xml-parser": "^5.10.1",
+    "saxes": "6.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -27,5 +29,9 @@
     "@types/node": "^26.1.1",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "qs": "^6.16.0",
+    "fast-uri": "^3.1.7"
   }
 }

@@ -1,47 +1,32 @@
-name: Build image & deploy to Render
+name: Verify
 
 on:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
-  build-and-deploy:
+  verify:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write        # allow pushing the image to GHCR
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          node-version: 24
+          cache: npm
 
-      # GHCR requires a lowercase owner (Joblet-Official -> joblet-official)
-      - name: Compute image name
-        id: img
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/outlier-plugin" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Build & push image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.img.outputs.name }}:latest
-            ${{ steps.img.outputs.name }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Typecheck
+        run: npm run typecheck
 
-      - name: Trigger Render deploy
-        run: |
-          if [ -z "${{ secrets.RENDER_DEPLOYMENT_HOOK }}" ]; then
-            echo "Error: RENDER_DEPLOYMENT_HOOK secret is not set."
-            exit 1
-          fi
-          curl -fsSL -X POST "${{ secrets.RENDER_DEPLOYMENT_HOOK }}"
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

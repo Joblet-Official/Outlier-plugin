@@ -3,29 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Outlier Jobs</title>
+  <title>Outlier Opportunities</title>
   <style>
     :root {
-      --brand: #f05b22;
-      --brand-dark: #d44d18;
-      --brand-soft: #fef0eb;
-      --brand-text: #c04010;
-      --text-main: #0a0a0a;
-      --text-secondary: #71717a;
-      --card-bg: #ffffff;
-      --border: #e7e7ea;
-      --border-strong: #d4d4d8;
+      color-scheme: light dark;
+      --outlier-orange: #f05b22;
+      --outlier-orange-dark: #c2440f;
+      --outlier-accent-tint: #fef0eb;
+      --outlier-border-tint: #f7c2ab;
+      --outlier-accent-text: #a8380c;
+      --text-main: CanvasText;
+      --text-secondary: GrayText;
+      --card-bg: Canvas;
+      --border: ButtonBorder;
+      --disabled-bg: ButtonFace;
+      --disabled-text: GrayText;
+      --focus-ring: Highlight;
+      --card-shadow: rgba(15, 23, 42, 0.08);
+      --card-hover-shadow: rgba(240, 91, 34, 0.16);
     }
 
     @media (prefers-color-scheme: dark) {
       :root {
-        --brand-soft: rgba(240, 91, 34, 0.12);
-        --brand-text: #f8875a;
-        --text-main: #f4f4f5;
-        --text-secondary: #a1a1aa;
-        --card-bg: #111113;
-        --border: #2a2a2e;
-        --border-strong: #3a3a3e;
+        --outlier-accent-tint: #3a1a0c;
+        --outlier-border-tint: #a55334;
+        --outlier-accent-text: #f8b294;
+        --card-shadow: rgba(0, 0, 0, 0.28);
+        --card-hover-shadow: rgba(240, 91, 34, 0.24);
       }
     }
 
@@ -38,7 +42,7 @@
     body {
       background: transparent;
       color: var(--text-main);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       padding: 8px;
       -webkit-font-smoothing: antialiased;
     }
@@ -51,23 +55,31 @@
     }
 
     .result-count {
-      background: var(--brand-soft);
+      background: var(--outlier-accent-tint);
+      border: 1px solid var(--outlier-border-tint);
       border-radius: 20px;
-      color: var(--brand-text);
+      color: var(--outlier-accent-text);
       flex-shrink: 0;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
       padding: 4px 10px;
+      text-align: center;
     }
 
     .carousel {
       display: flex;
       gap: 14px;
       overflow-x: auto;
+      overscroll-behavior-inline: contain;
       padding: 4px 0 16px;
       scroll-snap-type: x mandatory;
-      scrollbar-color: var(--border-strong) transparent;
+      scrollbar-color: var(--outlier-border-tint) transparent;
       scrollbar-width: thin;
+    }
+
+    .carousel:focus-visible {
+      outline: 3px solid var(--focus-ring);
+      outline-offset: 2px;
     }
 
     .carousel::-webkit-scrollbar {
@@ -75,7 +87,7 @@
     }
 
     .carousel::-webkit-scrollbar-thumb {
-      background: var(--border-strong);
+      background: var(--outlier-border-tint);
       border-radius: 10px;
     }
 
@@ -83,22 +95,23 @@
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(9, 9, 11, 0.06);
+      box-shadow: 0 2px 8px var(--card-shadow);
       display: flex;
-      flex: 0 0 260px;
+      flex: 0 0 min(260px, calc(100vw - 32px));
       flex-direction: column;
       gap: 12px;
-      max-width: 260px;
-      min-width: 260px;
+      max-width: min(260px, calc(100vw - 32px));
+      min-width: 0;
       overflow: hidden;
       padding: 18px;
       position: relative;
       scroll-snap-align: start;
       transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+      width: min(260px, calc(100vw - 32px));
     }
 
     .job-card::before {
-      background: var(--brand);
+      background: var(--outlier-orange);
       content: "";
       height: 3px;
       left: 0;
@@ -108,16 +121,16 @@
     }
 
     .job-card:hover {
-      border-color: var(--brand);
-      box-shadow: 0 6px 20px rgba(240, 91, 34, 0.13);
+      border-color: var(--outlier-border-tint);
+      box-shadow: 0 6px 20px var(--card-hover-shadow);
       transform: translateY(-2px);
     }
 
     .job-tag {
-      background: var(--brand-soft);
-      border: 1px solid rgba(240, 91, 34, 0.2);
+      background: var(--outlier-accent-tint);
+      border: 1px solid var(--outlier-border-tint);
       border-radius: 20px;
-      color: var(--brand-text);
+      color: var(--outlier-accent-text);
       display: inline-block;
       font-size: 11px;
       font-weight: 700;
@@ -129,14 +142,10 @@
 
     .job-title {
       color: var(--text-main);
-      display: -webkit-box;
       font-size: 16px;
       font-weight: 700;
       line-height: 1.3;
-      min-height: 42px;
-      overflow: hidden;
-      -webkit-box-orient: vertical;
-      -webkit-line-clamp: 2;
+      overflow-wrap: anywhere;
     }
 
     .job-meta {
@@ -146,7 +155,7 @@
     }
 
     .meta-row {
-      align-items: center;
+      align-items: flex-start;
       color: var(--text-secondary);
       display: flex;
       font-size: 13px;
@@ -159,35 +168,50 @@
     }
 
     .meta-value {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .apply-btn {
       align-items: center;
-      background: var(--brand);
+      background: var(--outlier-orange);
+      border: 1px solid var(--outlier-orange);
       border-radius: 8px;
       color: #ffffff;
+      cursor: pointer;
       display: flex;
       font-size: 14px;
       font-weight: 700;
+      font-family: inherit;
       justify-content: center;
       margin-top: auto;
+      min-height: 44px;
       padding: 10px 16px;
       text-align: center;
-      text-decoration: none;
       transition: background 0.2s ease;
+      width: 100%;
     }
 
     .apply-btn:hover,
     .apply-btn:focus-visible {
-      background: var(--brand-dark);
+      background: var(--outlier-orange-dark);
     }
 
     .apply-btn:focus-visible {
-      outline: 3px solid rgba(240, 91, 34, 0.35);
+      outline: 3px solid var(--focus-ring);
       outline-offset: 2px;
+    }
+
+    .apply-btn:disabled,
+    .apply-btn[aria-disabled="true"] {
+      background: var(--disabled-bg);
+      border-color: var(--border);
+      color: var(--disabled-text);
+      cursor: not-allowed;
+    }
+
+    .apply-btn[aria-busy="true"] {
+      cursor: progress;
     }
 
     .loading-state,
@@ -200,12 +224,25 @@
 
     .spinner {
       animation: spin 0.7s linear infinite;
-      border: 3px solid var(--brand-soft);
+      border: 3px solid var(--outlier-border-tint);
       border-radius: 50%;
-      border-top-color: var(--brand);
+      border-top-color: var(--outlier-orange);
       height: 32px;
       margin: 0 auto 16px;
       width: 32px;
+    }
+
+    .sr-only {
+      border: 0;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      padding: 0;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
     }
 
     @keyframes spin {
@@ -220,10 +257,35 @@
         transition: none;
       }
     }
+
+    @media (forced-colors: active) {
+      .job-card::before {
+        background: Highlight;
+      }
+
+      .job-tag,
+      .result-count {
+        background: Canvas;
+        border-color: ButtonText;
+        color: CanvasText;
+      }
+
+      .apply-btn:not(:disabled) {
+        background: ButtonFace;
+        border-color: ButtonText;
+        color: ButtonText;
+      }
+
+      .apply-btn:not(:disabled):hover,
+      .apply-btn:not(:disabled):focus-visible {
+        background: Highlight;
+        color: HighlightText;
+      }
+    }
   </style>
 </head>
 <body>
-  <main id="root" aria-live="polite">
+  <main id="root" aria-busy="true" aria-live="polite">
     <div class="loading-state">
       <div class="spinner" aria-hidden="true"></div>
       Loading opportunities...
@@ -233,77 +295,124 @@
   <script type="module">
     const root = document.getElementById("root");
     const MAX_VISIBLE_CARDS = 8;
-    const ALLOWED_APPLY_HOST = "__OUTLIER_APPLY_HOST__";
-    let dataReceived = false;
+    const MAX_URL_CHARACTERS = 4096;
+    const MAX_URL_BYTES = 4096;
+    const ALLOWED_APPLY_ORIGIN = "__OUTLIER_APPLY_ORIGIN__";
+    const textEncoder = new TextEncoder();
+    const RESULT_STATE_MESSAGES = Object.freeze({
+      invalid_request: "The opportunity search request could not be processed. Try a role or keyword with valid filters.",
+      location_unavailable: "Current location is unavailable. Specify a country or region to continue.",
+      unavailable: "Opportunity search is temporarily unavailable. Please try again shortly.",
+    });
 
-    // Old conversations can retain an iframe after its tool payload is gone.
-    // Clear the loading state instead of presenting that stale state as an error.
-    setTimeout(() => {
-      if (!dataReceived) root.innerHTML = "";
-    }, 3000);
+    function setWidgetSurfaceHidden(hidden) {
+      root.hidden = hidden;
+      for (const element of [document.documentElement, document.body]) {
+        if (!element?.style) continue;
+        element.style.height = hidden ? "0" : "";
+        element.style.minHeight = hidden ? "0" : "";
+        element.style.overflow = hidden ? "hidden" : "";
+      }
+      if (document.body?.style) document.body.style.padding = hidden ? "0" : "";
+    }
+
+    function dismissNoResults() {
+      root.innerHTML = "";
+      root.setAttribute("aria-busy", "false");
+      setWidgetSurfaceHidden(true);
+
+      try {
+        const closeRequest = window.openai?.requestClose?.();
+        if (closeRequest && typeof closeRequest.catch === "function") {
+          closeRequest.catch(() => {});
+        }
+      } catch {
+        // The zero-height surface remains hidden if the host cannot close it.
+      }
+    }
 
     function renderJobs(payload) {
-      dataReceived = true;
-      const data = payload && payload.type && payload.data ? payload.data : payload;
+      setWidgetSurfaceHidden(false);
+      const toolOutput = payload?.structuredContent || payload;
+      const data = toolOutput?.type === "application/json" && toolOutput?.data
+        ? toolOutput.data
+        : toolOutput;
 
-      if (!data || !Array.isArray(data.jobs)) {
-        root.innerHTML = "";
+      if (!data || typeof data !== "object" || typeof data.status !== "string") {
+        renderState("Unable to display opportunities right now.");
         return;
       }
 
-      if (data.jobs.length === 0) {
-        root.innerHTML = '<div class="empty-state">No jobs found. Try a different search.</div>';
+      if (data.status === "no_results") {
+        dismissNoResults();
         return;
       }
 
-      const visibleJobs = data.jobs.slice(0, MAX_VISIBLE_CARDS);
-      const total = Number.isFinite(Number(data.totalResults))
-        ? Math.max(visibleJobs.length, Number(data.totalResults))
-        : data.jobs.length;
+      if (data.status !== "ok") {
+        renderState(RESULT_STATE_MESSAGES[data.status] || "Unable to display opportunities right now.");
+        return;
+      }
+
+      if (!Array.isArray(data.jobs)) {
+        renderState("Unable to display opportunities right now.");
+        return;
+      }
+
+      const validJobObjects = data.jobs.filter((job) => job && typeof job === "object");
+      if (validJobObjects.length === 0) {
+        renderState("Unable to display opportunities right now.");
+        return;
+      }
+
+      const visibleJobs = validJobObjects.slice(0, MAX_VISIBLE_CARDS);
+      const declaredTotal = Number.isSafeInteger(data.totalResults) && data.totalResults >= 0
+        ? data.totalResults
+        : validJobObjects.length;
+      const total = Math.max(visibleJobs.length, declaredTotal);
 
       const cards = visibleJobs.map((job) => {
-        const safeUrl = toSafeHttpsUrl(job.applicationUrl);
-        const employer = job.employer || "Employer not listed";
-        const employmentType = job.schedule || job.contractType || "";
-        const locationRow = job.location
-          ? `<div class="meta-row">
-              <span class="meta-icon" aria-hidden="true">📍</span>
-              <span class="meta-value">${escapeHtml(job.location)}</span>
-            </div>`
-          : "";
-        const employmentTypeRow = employmentType
-          ? `<div class="meta-row">
-              <span class="meta-icon" aria-hidden="true">💼</span>
-              <span class="meta-value">${escapeHtml(employmentType)}</span>
-            </div>`
-          : "";
+        const safeUrl = toAllowedApplicationUrl(job.applicationUrl);
+        const title = job.title || "Open position";
+        const organization = job.organization || "Organization not listed";
+        const displayedLocation = job.location || job.workplace || "";
 
         return `
           <article class="job-card">
             <div class="job-tag">Job match</div>
-            <h3 class="job-title">${escapeHtml(job.title || "Open position")}</h3>
+            <h3 class="job-title">${escapeHtml(title)}</h3>
             <div class="job-meta">
-              ${locationRow}
-              ${employmentTypeRow}
+              ${displayedLocation ? `<div class="meta-row">
+                <span class="meta-icon" aria-hidden="true">📍</span>
+                <span class="meta-value">${escapeHtml(displayedLocation)}</span>
+              </div>` : ""}
               <div class="meta-row">
                 <span class="meta-icon" aria-hidden="true">🏢</span>
-                <span class="meta-value">${escapeHtml(employer)}</span>
+                <span class="meta-value">${escapeHtml(organization)}</span>
               </div>
             </div>
             ${safeUrl
-              ? `<a href="${escapeHtml(safeUrl)}" data-url="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="apply-btn">View &amp; Apply →</a>`
-              : '<span class="apply-btn" aria-disabled="true">Application unavailable</span>'}
+              ? `<button type="button" data-url="${escapeHtml(safeUrl)}" class="apply-btn" aria-label="View and apply for ${escapeHtml(title)}">View &amp; Apply →</button>`
+              : '<button type="button" class="apply-btn" disabled aria-disabled="true">Application unavailable</button>'}
           </article>`;
       }).join("");
 
-      const countLabel = `${total} ${total === 1 ? "result" : "results"}`;
+      const countLabel = `Showing ${visibleJobs.length} of ${total} ${total === 1 ? "result" : "results"}`;
       root.innerHTML = `
         <div class="header">
-          <div class="result-count">${escapeHtml(countLabel)}</div>
+          <div class="result-count" role="status">${escapeHtml(countLabel)}</div>
         </div>
-        <section class="carousel" aria-label="Showing ${visibleJobs.length} of ${total} matching jobs">
+        <p id="carousel-instructions" class="sr-only">Use the left and right arrow keys to move through the opportunities.</p>
+        <section class="carousel" role="region" tabindex="0" aria-describedby="carousel-instructions" aria-label="${escapeHtml(countLabel)} in the opportunities carousel">
           ${cards}
-        </section>`;
+        </section>
+        <p id="navigation-status" class="sr-only" aria-live="polite"></p>`;
+      root.setAttribute("aria-busy", "false");
+      setupCarouselKeyboard();
+    }
+
+    function renderState(message) {
+      root.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+      root.setAttribute("aria-busy", "false");
     }
 
     function escapeHtml(value) {
@@ -315,37 +424,92 @@
         .replace(/'/g, "&#039;");
     }
 
-    function toSafeHttpsUrl(value) {
+    function toAllowedApplicationUrl(value) {
+      if (typeof value !== "string") return "";
+      const candidate = value;
+      if (
+        !candidate ||
+        candidate !== candidate.trim() ||
+        candidate.length > MAX_URL_CHARACTERS ||
+        textEncoder.encode(candidate).byteLength > MAX_URL_BYTES ||
+        /[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}\s]/u.test(candidate)
+      ) return "";
+
       try {
-        const url = new URL(String(value || ""));
-        if (url.protocol !== "https:") return "";
-        const host = ALLOWED_APPLY_HOST.trim().toLowerCase();
-        if (host && !host.startsWith("__") && url.host.toLowerCase() !== host) {
-          return "";
-        }
-        return url.href;
+        const url = new URL(candidate);
+        if (
+          url.protocol !== "https:" ||
+          url.username ||
+          url.password ||
+          url.origin !== ALLOWED_APPLY_ORIGIN
+        ) return "";
+        return candidate;
       } catch {
         return "";
       }
     }
 
-    function openExternalUrl(url) {
-      if (!url) return;
+    async function openExternalUrl(url) {
+      const safeUrl = toAllowedApplicationUrl(url);
+      if (!safeUrl || typeof window.openai?.openExternal !== "function") return false;
+
       try {
-        if (window.openai && typeof window.openai.openExternal === "function") {
-          window.openai.openExternal({ href: url, redirectUrl: false });
-          return;
-        }
-      } catch {}
-      window.open(url, "_blank", "noopener,noreferrer");
+        await window.openai.openExternal({ href: safeUrl });
+        return true;
+      } catch (error) {
+        console.warn("The application link could not be opened through the ChatGPT bridge.", error);
+        return false;
+      }
     }
 
-    root.addEventListener("click", (event) => {
-      const link = event.target.closest("[data-url]");
-      if (!link) return;
-      event.preventDefault();
-      openExternalUrl(link.getAttribute("data-url"));
+    root.addEventListener("click", async (event) => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest("button[data-url]");
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+
+      const originalLabel = button.textContent;
+      const status = root.querySelector("#navigation-status");
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "Opening…";
+      if (status) status.textContent = "";
+
+      const opened = await openExternalUrl(button.getAttribute("data-url"));
+
+      if (button.isConnected) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = originalLabel;
+      }
+      if (!opened && status) {
+        status.textContent = "The application link could not be opened. Please try again.";
+      }
     });
+
+    function setupCarouselKeyboard() {
+      const carousel = root.querySelector(".carousel");
+      if (!carousel) return;
+
+      carousel.addEventListener("keydown", (event) => {
+        if (event.target !== carousel) return;
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+
+        event.preventDefault();
+        const firstCard = carousel.querySelector(".job-card");
+        const styles = getComputedStyle(carousel);
+        const gap = Number.parseFloat(styles.columnGap || styles.gap) || 0;
+        const step = firstCard ? firstCard.getBoundingClientRect().width + gap : carousel.clientWidth;
+        const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+
+        if (event.key === "Home") {
+          carousel.scrollTo({ left: 0, behavior });
+        } else if (event.key === "End") {
+          carousel.scrollTo({ left: carousel.scrollWidth - carousel.clientWidth, behavior });
+        } else {
+          carousel.scrollBy({ left: event.key === "ArrowRight" ? step : -step, behavior });
+        }
+      });
+    }
 
     window.addEventListener("openai:set_globals", (event) => {
       const globals = event.detail?.globals;
